@@ -1,4 +1,4 @@
-use std::{fmt, ops::{BitOr, Not, BitAnd, Shl, Shr}, sync::atomic::AtomicUsize};
+use std::{fmt, ops::{BitOr, Not, BitAnd, Shl, Shr}};
 
 fn main() {
     let all_columns = COLUMN_0|COLUMN_1|COLUMN_2|COLUMN_3|COLUMN_4|COLUMN_5|COLUMN_6|COLUMN_7;
@@ -7,19 +7,16 @@ fn main() {
     let board = Board::start();
     println!("{}", board);
 
-    for remainder in 1..10 {
-        COUNTER.store(0, std::sync::atomic::Ordering::SeqCst);
-        board.white_moves(remainder, None);
-        dbg!((remainder, COUNTER.load(std::sync::atomic::Ordering::SeqCst)));
-    }
+    let (_, mov) = board.white_moves(6, None);
+    println!("{mov}");
 }
 
-fn index_to_position(index: usize) -> (usize, usize) {
+fn index_to_position(index: u8) -> (u8, u8) {
     debug_assert!(index < 64);
     (index%8, index/8)
 }
 
-fn position_to_index(x: usize, y: usize) -> usize {
+fn position_to_index(x: u8, y: u8) -> u8 {
     debug_assert!(x < 8);
     debug_assert!(y < 8);
     8*y + x
@@ -52,19 +49,19 @@ impl BitAnd for Bitset {
     }
 }
 
-impl Shl<usize> for Bitset {
+impl Shl<u8> for Bitset {
     type Output = Self;
 
-    fn shl(self, rhs: usize) -> Self::Output {
+    fn shl(self, rhs: u8) -> Self::Output {
         debug_assert!(rhs < 64);
         Self(self.0 << rhs)
     }
 }
 
-impl Shr<usize> for Bitset {
+impl Shr<u8> for Bitset {
     type Output = Self;
 
-    fn shr(self, rhs: usize) -> Self::Output {
+    fn shr(self, rhs: u8) -> Self::Output {
         debug_assert!(rhs < 64);
         Self(self.0 >> rhs)
     }
@@ -89,7 +86,7 @@ impl Bitset {
         Self(0)
     }
 
-    fn from_position(x: usize, y: usize) -> Self {
+    fn from_position(x: u8, y: u8) -> Self {
         Self::zero().set(position_to_index(x, y))
     }
 
@@ -97,26 +94,26 @@ impl Bitset {
         self.0 == 0
     }
 
-    fn count(self) -> usize {
-        self.0.count_ones() as usize
+    fn count(self) -> i32 {
+        self.0.count_ones() as i32
     }
 
-    fn first_index(self) -> usize {
-        self.0.trailing_zeros() as usize
+    fn first_index(self) -> u8 {
+        self.0.trailing_zeros() as u8
     }
 
-    fn has(self, index: usize) -> bool {
+    fn has(self, index: u8) -> bool {
         debug_assert!(index < 64);
         (self.0 & (1 << index)) != 0
     }
 
-    fn clear(self, index: usize) -> Bitset {
+    fn clear(self, index: u8) -> Bitset {
         debug_assert!(index < 64);
         Self(self.0 & !(1 << index))
     }
 
-    fn set(self, index: usize) -> Bitset {
-        debug_assert!(index < 64);
+    fn set(self, index: u8) -> Bitset {
+        debug_assert!(index < 64 || index == u8::MAX);
         Self(self.0 | (1 << index))
     }
 
@@ -128,7 +125,7 @@ impl Bitset {
 struct Indices(Bitset);
 
 impl Iterator for Indices {
-    type Item = usize;
+    type Item = u8;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.0.is_empty() {
@@ -141,7 +138,7 @@ impl Iterator for Indices {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct PlayerBoard {
     pawns: Bitset,
     bishops: Bitset,
@@ -156,7 +153,7 @@ impl PlayerBoard {
         self.pawns | self.bishops | self.knights | self.rooks | self.queens | self.king
     }
 
-    fn captured(&mut self, index: usize) {
+    fn captured(&mut self, index: u8) {
         self.pawns = self.pawns.clear(index);
         self.bishops = self.bishops.clear(index);
         self.knights = self.knights.clear(index);
@@ -164,12 +161,22 @@ impl PlayerBoard {
         self.queens = self.queens.clear(index);
         self.king = self.king.clear(index);
     }
+
+    fn score(&self) -> f64 {
+        let score = self.pawns.count()
+            + self.bishops.count()*3
+            + self.knights.count()*3
+            + self.rooks.count()*5
+            + self.queens.count()*9
+            + self.king.count()*1000;
+        score.into()
+    }
 }
 
 const FLAG_WHITE_CAN_CASTLE: u32 = 1;
 const FLAG_BLACK_CAN_CASTLE: u32 = 1 << 1;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Board {
     black: PlayerBoard,
     white: PlayerBoard,
@@ -206,8 +213,8 @@ impl fmt::Debug for Board {
 
 fn fmt_pieces(board: &mut [u8; 64], pieces: Bitset, ch: u8) {
     for index in pieces.indices() {
-        assert_eq!(board[index], b'.');
-        board[index] = ch;
+        assert_eq!(board[index as usize], b'.');
+        board[index as usize] = ch;
     }
 }
 
@@ -242,8 +249,6 @@ const COLUMN_7: Bitset = Bitset(COLUMN_0.0 << 7);
 
 const COLUMN_0_TO_6: Bitset = Bitset(u64::MAX ^ COLUMN_7.0);
 const COLUMN_1_TO_7: Bitset = Bitset(u64::MAX ^ COLUMN_0.0);
-
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 impl Board {
     fn start() -> Self {
@@ -295,47 +300,115 @@ impl Board {
         debug_assert!(self.bitset().count() <= 32);
     }
 
-    fn white_moves(&self, remainder: usize, en_passant_index: Option<usize>) {
-        //println!("{}", &self);
-        COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.debug_check();
-        if remainder == 0 {
-            return;
-        }
-        self.white_pawns(remainder, en_passant_index);
+    fn score(&self) -> f64 {
+        self.black.score() - self.white.score()
     }
 
-    fn black_moves(&self, remainder: usize, en_passant_index: Option<usize>) {
-        //println!("{}", &self);
-        COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn white_moves(&self, remainder: usize, en_passant_index: Option<u8>) -> (f64, Move) {
         self.debug_check();
-        if remainder == 0 {
-            return;
+        if remainder <= 1 {
+            return (self.score(), Move::None);
         }
-        self.black_pawns(remainder, en_passant_index);
+        let remainder = remainder-1;
+        let mut score = Score::new();
+        self.white_pawns(&mut score, remainder, en_passant_index);
+        score.finalize()
     }
 
-    fn white_pawns(&self, remainder: usize, en_passant_index: Option<usize>) {
+    fn black_moves(&self, remainder: usize, en_passant_index: Option<u8>) -> (f64, Move) {
+        self.debug_check();
+        if remainder <= 1 {
+            return (self.score(), Move::None);
+        }
+        let remainder = remainder-1;
+        let mut score = Score::new();
+        self.black_pawns(&mut score, remainder, en_passant_index);
+        score.finalize()
+    }
+
+    fn white_pawns(&self, score: &mut Score, remainder: usize, en_passant_index: Option<u8>) {
         let all_pieces = self.bitset();
         let mut next_board = self.clone();
 
-        self.white_pawns_move_without_promote(remainder, &mut next_board, all_pieces);
-        self.white_pawns_capture_without_promote(remainder, &mut next_board);
+        self.white_pawns_move_without_promote(score, remainder, &mut next_board, all_pieces);
+        self.white_pawns_capture_without_promote(score, remainder, &mut next_board);
 
-        self.white_pawns_move_with_promote(remainder, &mut next_board, all_pieces);
-        self.white_pawns_capture_with_promote(remainder, &mut next_board);
+        self.white_pawns_move_with_promote(score, remainder, &mut next_board, all_pieces);
+        self.white_pawns_capture_with_promote(score, remainder, &mut next_board);
 
         if let Some(en_passant_index) = en_passant_index {
-            self.white_en_passant(remainder, &mut next_board, en_passant_index);
+            self.white_en_passant(score, remainder, &mut next_board, en_passant_index);
         }
     }
 
-    fn white_pawns_move_without_promote(&self, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
+    fn white_pawn_move(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        from: u8,
+        to: u8,
+        en_passant_index: Option<u8>,
+    ) -> (f64, Move) {
+        next_board.white.pawns = next_board.white.pawns.clear(from).set(to);
+        let (avg, _) = next_board.black_moves(remainder, en_passant_index);
+        next_board.white.pawns = self.white.pawns;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn white_pawn_capture(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        captured: u8,
+        from: u8,
+        to: u8,
+    ) -> (f64, Move) {
+        next_board.black.captured(captured);
+        next_board.white.pawns = next_board.white.pawns.clear(from).set(to);
+        let (avg, _) = next_board.black_moves(remainder, None);
+        next_board.white.pawns = self.white.pawns;
+        next_board.black = self.black;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn white_pawn_promote(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        from: u8,
+        to: u8,
+    ) -> (f64, Move) {
+        next_board.white.pawns = next_board.white.pawns.clear(from);
+        // TODO: support other figures
+        next_board.white.queens = next_board.white.queens.set(to);
+        let (avg, _) = next_board.black_moves(remainder, None);
+        next_board.white.queens = self.white.queens;
+        next_board.white.pawns = self.white.pawns;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn white_pawn_capture_promote(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        from: u8,
+        to: u8,
+    ) -> (f64, Move) {
+        next_board.black.captured(to);
+        next_board.white.pawns = next_board.white.pawns.clear(from);
+        // TODO: support other figures
+        next_board.white.queens = next_board.white.queens.set(to);
+        let (avg, _) = next_board.black_moves(remainder, None);
+        next_board.white.queens = self.white.queens;
+        next_board.white.pawns = self.white.pawns;
+        next_board.black = self.black;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn white_pawns_move_without_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
         let single_step = ((self.white.pawns & ROW_2_TO_7) >> 8) & !all_pieces;
         for index in single_step.indices() {
-            next_board.white.pawns = next_board.white.pawns.clear(index+8).set(index);
-            next_board.black_moves(remainder-1, None);
-            next_board.white.pawns = self.white.pawns;
+            score.update_white(self.white_pawn_move(remainder, next_board, index+8, index, None));
         }
 
         let double_step = {
@@ -343,125 +416,160 @@ impl Board {
             (a >> 8) & !all_pieces
         };
         for index in double_step.indices() {
-            next_board.white.pawns = next_board.white.pawns.clear(index+16).set(index);
-            next_board.black_moves(remainder-1, Some(index));
-            next_board.white.pawns = self.white.pawns;
+            score.update_white(self.white_pawn_move(remainder, next_board, index+16, index, Some(index)));
         }
     }
 
-    fn white_pawns_capture_without_promote(&self, remainder: usize, next_board: &mut Self) {
+    fn white_pawns_capture_without_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self) {
         let black_pieces = self.black.bitset();
 
         let capture_right = ((self.white.pawns & COLUMN_0_TO_6 & ROW_2_TO_7) >> 7) & black_pieces;
         for index in capture_right.indices() {
-            next_board.black.captured(index);
-            next_board.white.pawns = next_board.white.pawns.clear(index+7).set(index);
-            next_board.black_moves(remainder-1, None);
-            next_board.white.pawns = self.white.pawns;
-            next_board.black = self.black;
+            score.update_white(self.white_pawn_capture(remainder, next_board, index, index+7, index));
         }
 
         let capture_left = ((self.white.pawns & COLUMN_1_TO_7 & ROW_2_TO_7) >> 9) & black_pieces;
         for index in capture_left.indices() {
-            next_board.black.captured(index);
-            next_board.white.pawns = next_board.white.pawns.clear(index+9).set(index);
-            next_board.black_moves(remainder-1, None);
-            next_board.white.pawns = self.white.pawns;
-            next_board.black = self.black;
+            score.update_white(self.white_pawn_capture(remainder, next_board, index, index+9, index));
         }
     }
 
-    fn white_pawns_move_with_promote(&self, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
+    fn white_pawns_move_with_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
         let step = ((self.white.pawns & ROW_1) >> 8) & !all_pieces;
         for index in step.indices() {
-            next_board.white.pawns = next_board.white.pawns.clear(index+8);
-            // TODO: support other figures
-            next_board.white.queens = next_board.white.queens.set(index);
-            next_board.black_moves(remainder-1, None);
-            next_board.white.queens = self.white.queens;
-            next_board.white.pawns = self.white.pawns;
+            score.update_white(self.white_pawn_promote(remainder, next_board, index+8, index));
         }
     }
 
-    fn white_pawns_capture_with_promote(&self, remainder: usize, next_board: &mut Self) {
+    fn white_pawns_capture_with_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self) {
         let black_pieces = self.black.bitset();
 
         let capture_right = ((self.white.pawns & COLUMN_0_TO_6 & ROW_1) >> 7) & black_pieces;
         for index in capture_right.indices() {
-            next_board.black.captured(index);
-            next_board.white.pawns = next_board.white.pawns.clear(index+7);
-            // TODO: support other figures
-            next_board.white.queens = next_board.white.queens.set(index);
-            next_board.black_moves(remainder-1, None);
-
-            next_board.white.queens = self.white.queens;
-            next_board.white.pawns = self.white.pawns;
-            next_board.black = self.black;
+            score.update_white(self.white_pawn_capture_promote(remainder, next_board, index+7, index));
         }
 
         let capture_left = ((self.white.pawns & COLUMN_1_TO_7 & ROW_1) >> 9) & black_pieces;
         for index in capture_left.indices() {
-            next_board.black.captured(index);
-            next_board.white.pawns = next_board.white.pawns.clear(index+9);
-            // TODO: support other figures
-            next_board.white.queens = next_board.white.queens.set(index);
-            next_board.black_moves(remainder-1, None);
-
-            next_board.white.queens = self.white.queens;
-            next_board.white.pawns = self.white.pawns;
-            next_board.black = self.black;
+            score.update_white(self.white_pawn_capture_promote(remainder, next_board, index+9, index));
         }
     }
 
-    fn white_en_passant(&self, remainder: usize, next_board: &mut Self, en_passant_index: usize) {
+    fn white_en_passant(&self, score: &mut Score, remainder: usize, next_board: &mut Self, en_passant_index: u8) {
+        debug_assert!(next_board.black.pawns.has(en_passant_index));
         let (x, y) = index_to_position(en_passant_index);
 
         if x > 0 {
             let left_neighbour_pawn = Bitset::from_position(x-1, y) & self.white.pawns;
             if !left_neighbour_pawn.is_empty() {
-                next_board.white.pawns = (next_board.white.pawns & !left_neighbour_pawn).set(position_to_index(x, y-1));
-                debug_assert!(next_board.black.pawns.has(en_passant_index));
-                next_board.black.pawns = self.black.pawns.clear(en_passant_index);
-                next_board.black_moves(remainder-1, None);
-                next_board.black.pawns = self.black.pawns;
-                next_board.white.pawns = self.white.pawns;
+                score.update_white(self.white_pawn_capture(
+                    remainder,
+                    next_board,
+                    en_passant_index,
+                    left_neighbour_pawn.first_index(),
+                    position_to_index(x, y-1),
+                ));
             }
         }
         
         if x < 7 {
             let right_neighbour_pawn = Bitset::from_position(x+1, y) & self.white.pawns;
             if !right_neighbour_pawn.is_empty() {
-                next_board.white.pawns = (next_board.white.pawns & !right_neighbour_pawn).set(position_to_index(x, y-1));
-                debug_assert!(next_board.black.pawns.has(en_passant_index));
-                next_board.black.pawns = self.black.pawns.clear(en_passant_index);
-                next_board.black_moves(remainder-1, None);
-                next_board.black.pawns = self.black.pawns;
-                next_board.white.pawns = self.white.pawns;
+                score.update_white(self.white_pawn_capture(
+                    remainder,
+                    next_board,
+                    en_passant_index,
+                    right_neighbour_pawn.first_index(),
+                    position_to_index(x, y-1),
+                ));
             }
         }
     }
 
-    fn black_pawns(&self, remainder: usize, en_passant_index: Option<usize>) {
+    fn black_pawns(&self, score: &mut Score, remainder: usize, en_passant_index: Option<u8>) {
         let all_pieces = self.bitset();
         let mut next_board = self.clone();
 
-        self.black_pawns_move_without_promote(remainder, &mut next_board, all_pieces);
-        self.black_pawns_capture_without_promote(remainder, &mut next_board);
+        self.black_pawns_move_without_promote(score, remainder, &mut next_board, all_pieces);
+        self.black_pawns_capture_without_promote(score, remainder, &mut next_board);
 
-        self.black_pawns_move_with_promote(remainder, &mut next_board, all_pieces);
-        self.black_pawns_capture_with_promote(remainder, &mut next_board);
+        self.black_pawns_move_with_promote(score, remainder, &mut next_board, all_pieces);
+        self.black_pawns_capture_with_promote(score, remainder, &mut next_board);
 
         if let Some(en_passant_index) = en_passant_index {
-            self.black_en_passant(remainder, &mut next_board, en_passant_index);
+            self.black_en_passant(score, remainder, &mut next_board, en_passant_index);
         }
     }
 
-    fn black_pawns_move_without_promote(&self, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
+    fn black_pawn_move(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        from: u8,
+        to: u8,
+        en_passant_index: Option<u8>,
+    ) -> (f64, Move) {
+        next_board.black.pawns = next_board.black.pawns.clear(from).set(to);
+        let (avg, _) = next_board.white_moves(remainder, en_passant_index);
+        next_board.black.pawns = self.black.pawns;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn black_pawn_capture(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        captured: u8,
+        from: u8,
+        to: u8,
+    ) -> (f64, Move) {
+        next_board.white.captured(captured);
+        next_board.black.pawns = next_board.black.pawns.clear(from).set(to);
+        let (avg, _) = next_board.white_moves(remainder, None);
+        next_board.black.pawns = self.black.pawns;
+        next_board.white = self.white;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn black_pawn_promote(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        from: u8,
+        to: u8,
+    ) -> (f64, Move) {
+        next_board.black.pawns = next_board.black.pawns.clear(from);
+        // TODO: support other figures
+        next_board.black.queens = next_board.black.queens.set(to);
+        let (avg, _) = next_board.white_moves(remainder, None);
+        next_board.black.queens = self.black.queens;
+        next_board.black.pawns = self.black.pawns;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn black_pawn_capture_promote(
+        &self,
+        remainder: usize,
+        next_board: &mut Self,
+        from: u8,
+        to: u8,
+    ) -> (f64, Move) {
+        next_board.white.captured(to);
+        next_board.black.pawns = next_board.black.pawns.clear(from);
+        // TODO: support other figures
+        next_board.black.queens = next_board.black.queens.set(to);
+        let (avg, _) = next_board.white_moves(remainder, None);
+
+        next_board.black.queens = self.black.queens;
+        next_board.black.pawns = self.black.pawns;
+        next_board.white = self.white;
+        (avg, Move::Pawn { from, to })
+    }
+
+    fn black_pawns_move_without_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
         let single_step = ((self.black.pawns & ROW_0_TO_5) << 8) & !all_pieces;
         for index in single_step.indices() {
-            next_board.black.pawns = next_board.black.pawns.clear(index-8).set(index);
-            next_board.white_moves(remainder-1, None);
-            next_board.black.pawns = self.black.pawns;
+            score.update_black(self.black_pawn_move(remainder, next_board, index-8, index, None));
         }
 
         let double_step = {
@@ -469,101 +577,158 @@ impl Board {
             (a << 8) & !all_pieces
         };
         for index in double_step.indices() {
-            next_board.black.pawns = next_board.black.pawns.clear(index-16).set(index);
-            next_board.white_moves(remainder-1, Some(index));
-            next_board.black.pawns = self.black.pawns;
+            score.update_black(self.black_pawn_move(remainder, next_board, index-16, index, Some(index)));
         }
     }
 
-    fn black_pawns_capture_without_promote(&self, remainder: usize, next_board: &mut Self) {
+    fn black_pawns_capture_without_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self) {
         let white_pieces = self.black.bitset();
 
         let capture_right = ((self.black.pawns & COLUMN_0_TO_6 & ROW_0_TO_5) << 9) & white_pieces;
         for index in capture_right.indices() {
-            next_board.white.captured(index);
-            next_board.black.pawns = next_board.black.pawns.clear(index-9).set(index);
-            next_board.white_moves(remainder-1, None);
-            next_board.black.pawns = self.black.pawns;
-            next_board.white = self.white;
+            score.update_black(self.black_pawn_capture(remainder, next_board, index, index-9, index));
         }
 
         let capture_left = ((self.black.pawns & COLUMN_1_TO_7 & ROW_0_TO_5) << 7) & white_pieces;
         for index in capture_left.indices() {
-            next_board.white.captured(index);
-            next_board.black.pawns = next_board.black.pawns.clear(index-7).set(index);
-            next_board.white_moves(remainder-1, None);
-            next_board.black.pawns = self.black.pawns;
-            next_board.white = self.white;
+            score.update_black(self.black_pawn_capture(remainder, next_board, index, index-7, index));
         }
     }
 
-    fn black_pawns_move_with_promote(&self, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
+    fn black_pawns_move_with_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self, all_pieces: Bitset) {
         let step = ((self.black.pawns & ROW_6) << 8) & !all_pieces;
         for index in step.indices() {
-            next_board.black.pawns = next_board.black.pawns.clear(index-8);
-            // TODO: support other figures
-            next_board.black.queens = next_board.black.queens.set(index);
-            next_board.white_moves(remainder-1, None);
-            next_board.black.queens = self.black.queens;
-            next_board.black.pawns = self.black.pawns;
+            score.update_black(self.black_pawn_promote(remainder, next_board, index-8, index));
         }
     }
 
-    fn black_pawns_capture_with_promote(&self, remainder: usize, next_board: &mut Self) {
+    fn black_pawns_capture_with_promote(&self, score: &mut Score, remainder: usize, next_board: &mut Self) {
         let white_pieces = self.black.bitset();
 
         let capture_right = ((self.black.pawns & COLUMN_0_TO_6 & ROW_6) << 9) & white_pieces;
         for index in capture_right.indices() {
-            next_board.white.captured(index);
-            next_board.black.pawns = next_board.black.pawns.clear(index-9);
-            // TODO: support other figures
-            next_board.black.queens = next_board.black.queens.set(index);
-            next_board.white_moves(remainder-1, None);
-
-            next_board.black.queens = self.black.queens;
-            next_board.black.pawns = self.black.pawns;
-            next_board.white = self.white;
+            score.update_black(self.black_pawn_capture_promote(remainder, next_board, index-9, index));
         }
 
         let capture_left = ((self.black.pawns & COLUMN_1_TO_7 & ROW_6) << 7) & white_pieces;
         for index in capture_left.indices() {
-            next_board.white.captured(index);
-            next_board.black.pawns = next_board.black.pawns.clear(index-7);
-            // TODO: support other figures
-            next_board.black.queens = next_board.black.queens.set(index);
-            next_board.white_moves(remainder-1, None);
-
-            next_board.black.queens = self.black.queens;
-            next_board.black.pawns = self.black.pawns;
-            next_board.white = self.white;
+            score.update_black(self.black_pawn_capture_promote(remainder, next_board, index-7, index));
         }
     }
 
-    fn black_en_passant(&self, remainder: usize, next_board: &mut Self, en_passant_index: usize) {
+    fn black_en_passant(&self, score: &mut Score, remainder: usize, next_board: &mut Self, en_passant_index: u8) {
+        debug_assert!(next_board.white.pawns.has(en_passant_index));
         let (x, y) = index_to_position(en_passant_index);
 
         if x > 0 {
             let left_neighbour_pawn = Bitset::from_position(x-1, y) & self.black.pawns;
             if !left_neighbour_pawn.is_empty() {
-                next_board.black.pawns = (next_board.black.pawns & !left_neighbour_pawn).set(position_to_index(x, y+1));
-                debug_assert!(next_board.white.pawns.has(en_passant_index));
-                next_board.white.pawns = self.white.pawns.clear(en_passant_index);
-                next_board.white_moves(remainder-1, None);
-                next_board.white.pawns = self.white.pawns;
-                next_board.black.pawns = self.black.pawns;
+                score.update_black(self.black_pawn_capture(
+                    remainder,
+                    next_board,
+                    en_passant_index,
+                    left_neighbour_pawn.first_index(),
+                    position_to_index(x, y+1),
+                ));
             }
         }
 
         if x < 7 {
             let right_neighbour_pawn = Bitset::from_position(x+1, y) & self.black.pawns;
             if !right_neighbour_pawn.is_empty() {
-                next_board.black.pawns = (next_board.black.pawns & !right_neighbour_pawn).set(position_to_index(x, y+1));
-                debug_assert!(next_board.white.pawns.has(en_passant_index));
-                next_board.white.pawns = self.white.pawns.clear(en_passant_index);
-                next_board.white_moves(remainder-1, None);
-                next_board.white.pawns = self.white.pawns;
-                next_board.black.pawns = self.black.pawns;
+                score.update_black(self.black_pawn_capture(
+                    remainder,
+                    next_board,
+                    en_passant_index,
+                    right_neighbour_pawn.first_index(),
+                    position_to_index(x, y+1),
+                ));
             }
         }
+    }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum Move {
+    // TODO: white, black
+    None,
+    King { from: u8, to: u8 },
+    Queen { from: u8, to: u8 },
+    Rook { from: u8, to: u8 },
+    Bishop { from: u8, to: u8 },
+    Knight { from: u8, to: u8 },
+    Pawn { from: u8, to: u8 },
+    CastleLong,
+    CastleShort
+}
+
+fn index_to_chess_position(index: u8) -> (char, char) {
+    let (x, y) = index_to_position(index);
+    ((b'a' + x).into(), char::from_digit((8-y).into(), 10).unwrap())
+}
+
+fn fmt_move(f: &mut fmt::Formatter<'_>, figure: &str, from_index: u8, to_index: u8) -> fmt::Result {
+    let (from_x, from_y) = index_to_chess_position(from_index);
+    let (to_x, to_y) = index_to_chess_position(to_index);
+    write!(f, "{figure}: {from_x}{from_y} -> {to_x}{to_y}")
+}
+
+impl fmt::Display for Move {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Move::Pawn { from, to } => {
+                fmt_move(f, "Pawn", from, to)
+            },
+            _ => todo!(),
+        }
+    }
+}
+
+impl fmt::Debug for Move {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+
+struct Score {
+    sum: f64,
+    count: u32,
+    best_avg: f64,
+    best_move: Move,
+}
+
+impl Score {
+    fn new() -> Self {
+        // TODO: start with first legal move, if available
+        Self {
+            sum: 0.0,
+            count: 0,
+            best_avg: 0.0,
+            best_move: Move::None,
+        }
+    }
+
+    fn update_white(&mut self, (avg, mov): (f64, Move)) {
+        self.sum += avg;
+        self.count += 1;
+        if avg < self.best_avg {
+            self.best_avg = avg;
+            self.best_move = mov;
+        }
+    }
+
+    fn update_black(&mut self, (avg, mov): (f64, Move)) {
+        self.sum += avg;
+        self.count += 1;
+        if avg > self.best_avg {
+            self.best_avg = avg;
+            self.best_move = mov;
+        }
+    }
+
+    fn finalize(self) -> (f64, Move) {
+        (self.sum / f64::from(self.count), self.best_move)
     }
 }
