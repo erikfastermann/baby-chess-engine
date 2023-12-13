@@ -1,13 +1,15 @@
-use std::{fmt::{self, write, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}};
+use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip};
 
 fn main() {
+    unsafe { init_diagonals() };
+
     let all_columns = COLUMN_0|COLUMN_1|COLUMN_2|COLUMN_3|COLUMN_4|COLUMN_5|COLUMN_6|COLUMN_7;
     debug_assert_eq!(all_columns.count(), 64);
     debug_assert_eq!(ROW_2_TO_7.count(), 48);
     let board = Board::start();
     println!("{}", board);
 
-    let (_, mov) = board.white_moves(7, None);
+    let (_, mov) = board.white_moves(6, None);
     println!("{mov}");
 }
 
@@ -92,6 +94,10 @@ impl Bitset {
         Self(0)
     }
 
+    fn ones() -> Self {
+        Self(u64::MAX)
+    }
+
     fn from_position(x: u8, y: u8) -> Self {
         Self::zero().with(position_to_index(x, y))
     }
@@ -118,6 +124,15 @@ impl Bitset {
         self.0.trailing_zeros() as u8
     }
 
+    fn try_first_index(self) -> Option<u8> {
+        let trailing_zeros = self.0.trailing_zeros() as u8;
+        if trailing_zeros < 64 { Some(trailing_zeros) } else { None }
+    }
+
+    fn try_last_index(self) -> Option<u8> {
+        63u8.checked_sub(self.0.leading_zeros() as u8)
+    }
+
     fn has(self, index: u8) -> bool {
         debug_assert!(index < 64);
         (self.0 & (1 << index)) != 0
@@ -139,6 +154,11 @@ impl Bitset {
     fn with(self, index: u8) -> Self {
         debug_assert!(index < 64);
         Self(self.0 | (1 << index))
+    }
+
+    fn mov(&mut self, from: u8, to: u8) {
+        self.clear(from);
+        self.set(to);
     }
 
     fn indices(self) -> Indices {
@@ -274,6 +294,230 @@ const COLUMN_7: Bitset = Bitset(COLUMN_0.0 << 7);
 const COLUMN_0_TO_6: Bitset = Bitset(u64::MAX ^ COLUMN_7.0);
 const COLUMN_1_TO_7: Bitset = Bitset(u64::MAX ^ COLUMN_0.0);
 
+static mut DIAGONALS_LEFT: [Bitset; 64] = [Bitset(0); 64];
+static mut DIAGONALS_RIGHT: [Bitset; 64] = [Bitset(0); 64];
+
+fn diagonal_left(index: u8) -> Bitset {
+    unsafe { DIAGONALS_LEFT[usize::from(index)] }
+}
+
+fn diagonal_right(index: u8) -> Bitset {
+    unsafe { DIAGONALS_RIGHT[usize::from(index)] }
+}
+
+unsafe fn init_diagonals() {
+    let (left, right) = diagonals();
+    for index in 0..64 {
+        debug_assert_eq!(left.iter().filter(|s| s.has(index)).count(), 1);
+        debug_assert_eq!(right.iter().filter(|s| s.has(index)).count(), 1);
+        DIAGONALS_LEFT[usize::from(index)] = *left.iter().find(|s| s.has(index)).unwrap();
+        DIAGONALS_RIGHT[usize::from(index)] = *right.iter().find(|s| s.has(index)).unwrap();
+    }
+}
+
+fn diagonals() -> (Vec<Bitset>, Vec<Bitset>) {
+    fn to_bitset(iter: impl Iterator<Item = (u8, u8)>) -> Bitset {
+        iter.fold(Bitset::zero(), |s, (x, y)| s.with(position_to_index(x, y)))
+    }
+
+    let left_upper = (0..8).map(|y| zip((0..8).rev(), (0..y+1).rev()));
+    let left_lower = (0..7).rev().map(|x| zip((0..x+1).rev(), (0..8).rev()));
+
+    let left = left_upper.chain(left_lower)
+        .map(|iter| to_bitset(iter))
+        .collect::<Vec<_>>();
+
+    let right_upper = (0..8).map(|y| zip(0..8, (0..y+1).rev()));
+    let right_lower = (1..8).map(|x| zip(x..8, (0..8).rev()));
+
+    let right = right_upper.chain(right_lower)
+        .map(|iter| to_bitset(iter))
+        .collect::<Vec<_>>();
+
+    debug_assert_eq!(left.iter().copied().map(Bitset::count).sum::<i32>(), 64);
+    debug_assert_eq!(right.iter().copied().map(Bitset::count).sum::<i32>(), 64);
+
+    (left, right)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Line {
+    without_capture: Bitset,
+    with_capture: Bitset,
+}
+
+impl Line {
+    fn row(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let (_, y) = index_to_position(index);
+        let before = Bitset::before(index);
+        let after = Bitset::after(index);
+        let row = ROW_0 << (y*8);
+        let row_pieces = all_pieces & row;
+        let range_from = (row_pieces & before).try_last_index()
+            .map(|min| Bitset::after(min))
+            .unwrap_or(Bitset::ones());
+        let range_to = (row_pieces & after).try_first_index()
+            .map(|max| Bitset::before(max))
+            .unwrap_or(Bitset::ones());
+        let range = range_from & range_to & row;
+        let without_capture = range.without(index);
+        let with_capture = ((range << 1) | (range >> 1)) & !range & row & enemy_pieces;
+        Self { without_capture, with_capture }
+    }
+
+    #[allow(dead_code)]
+    fn row_alt(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let (x, y) = index_to_position(index);
+
+        let mut without_capture = Bitset::zero();
+        let mut with_capture = Bitset::zero();
+
+        let mut check_x: i16 = i16::from(x) - 1;
+        while check_x >= 0 && !all_pieces.has(position_to_index(check_x.try_into().unwrap(), y)) {
+            without_capture.set(position_to_index(check_x.try_into().unwrap(), y));
+            check_x -= 1;
+        }
+        if check_x >= 0 && enemy_pieces.has(position_to_index(check_x.try_into().unwrap(), y)) {
+            with_capture.set(position_to_index(check_x.try_into().unwrap(), y));
+        }
+
+        let mut check_x = x + 1;
+        while check_x < 8 && !all_pieces.has(position_to_index(check_x, y)) {
+            without_capture.set(position_to_index(check_x, y));
+            check_x += 1;
+        }
+        if check_x < 8 && enemy_pieces.has(position_to_index(check_x, y)) {
+            with_capture.set(position_to_index(check_x, y));
+        }
+
+        Self { without_capture, with_capture }
+    }
+
+    fn column(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let (x, _) = index_to_position(index);
+        let before = Bitset::before(index);
+        let after = Bitset::after(index);
+        let column = COLUMN_0 << x;
+        let column_pieces = column & all_pieces;
+        let range_from = (column_pieces & before).try_last_index()
+            .map(|min| Bitset::after(min))
+            .unwrap_or(Bitset::ones());
+        let range_to = (column_pieces & after).try_first_index()
+            .map(|max| Bitset::before(max))
+            .unwrap_or(Bitset::ones());
+        let range = range_from & range_to & column;
+        let without_capture = range.without(index);
+        let with_capture = ((range << 8) | (range >> 8)) & !range & column & enemy_pieces;
+        Self { without_capture, with_capture }
+    }
+
+    #[allow(dead_code)]
+    fn column_alt(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let (x, y) = index_to_position(index);
+
+        let mut without_capture = Bitset::zero();
+        let mut with_capture = Bitset::zero();
+
+        let mut check_y: i16 = i16::from(y) - 1;
+        while check_y >= 0 && !all_pieces.has(position_to_index(x, check_y.try_into().unwrap())) {
+            without_capture.set(position_to_index(x, check_y.try_into().unwrap()));
+            check_y -= 1;
+        }
+        if check_y >= 0 && enemy_pieces.has(position_to_index(x, check_y.try_into().unwrap())) {
+            with_capture.set(position_to_index(x, check_y.try_into().unwrap()));
+        }
+
+        let mut check_y = y + 1;
+        while check_y < 8 && !all_pieces.has(position_to_index(x, check_y)) {
+            without_capture.set(position_to_index(x, check_y));
+            check_y += 1;
+        }
+        if check_y < 8 && enemy_pieces.has(position_to_index(x, check_y)) {
+            with_capture.set(position_to_index(x, check_y));
+        }
+
+        Self { without_capture, with_capture }
+    }
+
+    fn diagonal_left(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let before = Bitset::before(index);
+        let after = Bitset::after(index);
+        let diagonal = diagonal_left(index);
+        let diagonal_pieces = diagonal & all_pieces;
+        let range_from = (diagonal_pieces & before).try_last_index()
+            .map(|min| Bitset::after(min))
+            .unwrap_or(Bitset::ones());
+        let range_to = (diagonal_pieces & after).try_first_index()
+            .map(|max| Bitset::before(max))
+            .unwrap_or(Bitset::ones());
+        let range = range_from & range_to & diagonal;
+        let without_capture = range.without(index);
+
+        let mut with_capture_builder = Bitset::zero();
+        let (up_x, up_y) = index_to_position(range.try_first_index().unwrap());
+        if up_x > 0 && up_y > 0 {
+            with_capture_builder.set(position_to_index(up_x-1, up_y-1));
+        }
+        let (down_x, down_y) = index_to_position(range.try_last_index().unwrap());
+        if down_x < 7 && down_y < 7 {
+            with_capture_builder.set(position_to_index(down_x+1, down_y+1));
+        }
+
+        Self { without_capture, with_capture: with_capture_builder & enemy_pieces }
+    }
+
+    fn diagonal_right(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let before = Bitset::before(index);
+        let after = Bitset::after(index);
+        let diagonal = diagonal_right(index);
+        let diagonal_pieces = diagonal & all_pieces;
+        let range_from = (diagonal_pieces & before).try_last_index()
+            .map(|min| Bitset::after(min))
+            .unwrap_or(Bitset::ones());
+        let range_to = (diagonal_pieces & after).try_first_index()
+            .map(|max| Bitset::before(max))
+            .unwrap_or(Bitset::ones());
+        let range = range_from & range_to & diagonal;
+        let without_capture = range.without(index);
+
+        let mut with_capture_builder = Bitset::zero();
+        let (up_x, up_y) = index_to_position(range.try_first_index().unwrap());
+        if up_x < 7 && up_y > 0 {
+            with_capture_builder.set(position_to_index(up_x+1, up_y-1));
+        }
+        let (down_x, down_y) = index_to_position(range.try_last_index().unwrap());
+        if down_x > 0 && down_y < 7 {
+            with_capture_builder.set(position_to_index(down_x-1, down_y+1));
+        }
+
+        Self { without_capture, with_capture: with_capture_builder & enemy_pieces }
+    }
+
+    fn bishop(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let Self { without_capture: left_without, with_capture: left_with } =
+            Self::diagonal_left(all_pieces, index, enemy_pieces);
+        let Self { without_capture: right_without, with_capture: right_with } =
+            Self::diagonal_right(all_pieces, index, enemy_pieces);
+        Self { without_capture: left_without|right_without, with_capture: left_with|right_with }
+    }
+
+    fn rook(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let Self { without_capture: row_without, with_capture: row_with } =
+            Self::row(all_pieces, index, enemy_pieces);
+        let Self { without_capture: column_without, with_capture: column_with } =
+            Self::column(all_pieces, index, enemy_pieces);
+        Self { without_capture: row_without|column_without, with_capture: row_with|column_with }
+    }
+
+    fn queen(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        let Self { without_capture: bishop_without, with_capture: bishop_with } =
+            Self::bishop(all_pieces, index, enemy_pieces);
+        let Self { without_capture: rook_without, with_capture: rook_with } =
+            Self::rook(all_pieces, index, enemy_pieces);
+        Self { without_capture: bishop_without|rook_without, with_capture: bishop_with|rook_with }
+    }
+}
+
 impl Board {
     fn start() -> Self {
         let black_pawns = (0..8).map(|x| Bitset::from_position(x, 1))
@@ -334,9 +578,6 @@ impl Board {
         debug_assert!(self.white.pawns.count() <= 8);
         debug_assert!(self.black.pawns.count() <= 8);
 
-        debug_assert_eq!(self.white.king.count(), 1);
-        debug_assert_eq!(self.black.king.count(), 1);
-
         debug_assert!(self.white.bitset().count() <= 16);
         debug_assert!(self.black.bitset().count() <= 16);
         debug_assert!(self.bitset().count() <= 32);
@@ -356,6 +597,7 @@ impl Board {
         let mut next_board = self.clone();
         let mut score = Score::new();
         self.white_pawns(&mut score, remainder, &mut next_board, en_passant_index);
+        self.white_queens(&mut score, remainder, &mut next_board);
         score.finalize()
     }
 
@@ -369,15 +611,50 @@ impl Board {
         let mut next_board = self.clone();
         let mut score = Score::new();
         self.black_pawns(&mut score, remainder, &mut next_board, en_passant_index);
+        self.black_queens(&mut score, remainder, &mut next_board);
         score.finalize()
     }
 
-    fn white_queen(&self, score: &mut Score, remainder: usize, next_board: &mut Board) {
-        // TODO:
-        // for each queen bit:
-        // get row: position.y, bitshift row_0 (y*8)
-        // all_pieces&row -> get first piece after, and first piece before queen
-        // etc.
+    fn white_queens(&self, score: &mut Score, remainder: usize, next_board: &mut Board) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.black.bitset();
+
+        for from in self.white.queens.indices() {
+            let Line { without_capture, with_capture } = Line::queen(all_pieces, from, enemy_pieces);
+            for to in without_capture.indices() {
+                next_board.white.queens.mov(from, to);
+                score.update_white(next_board.black_moves(remainder, None));
+                next_board.white.queens = self.white.queens;
+            }
+            for to in with_capture.indices() {
+                next_board.black.captured(to);
+                next_board.white.queens.mov(from, to);
+                score.update_white(next_board.black_moves(remainder, None));
+                next_board.white.queens = self.white.queens;
+                next_board.black = self.black;
+            }
+        }
+    }
+
+    fn black_queens(&self, score: &mut Score, remainder: usize, next_board: &mut Board) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.white.bitset();
+
+        for from in self.black.queens.indices() {
+            let Line { without_capture, with_capture } = Line::queen(all_pieces, from, enemy_pieces);
+            for to in without_capture.indices() {
+                next_board.black.queens.mov(from, to);
+                score.update_black(next_board.white_moves(remainder, None));
+                next_board.black.queens = self.black.queens;
+            }
+            for to in with_capture.indices() {
+                next_board.white.captured(to);
+                next_board.black.queens.mov(from, to);
+                score.update_black(next_board.white_moves(remainder, None));
+                next_board.black.queens = self.black.queens;
+                next_board.white = self.white;
+            }
+        }
     }
 
     fn white_pawns(&self, score: &mut Score, remainder: usize, next_board: &mut Board, en_passant_index: Option<u8>) {
@@ -805,5 +1082,44 @@ impl Score {
 
     fn finalize(self) -> (f64, Move) {
         (self.sum / f64::from(self.count), self.best_move)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_line_row() {
+        for (x, y, enemy_x, enemy_y) in itertools::iproduct!(0..8, 0..8, 0..8, 0..8) {
+            if x == enemy_x && y == enemy_y {
+                continue;
+            }
+            let index = position_to_index(x, y);
+            let enemy_index = position_to_index(enemy_x, enemy_y);
+            let all_pieces = Bitset::zero().with(index).with(enemy_index);
+            let enemy_pieces = Bitset::zero().with(enemy_index);
+            assert_eq!(
+                Line::row(all_pieces, index, enemy_pieces),
+                Line::row_alt(all_pieces, index, enemy_pieces),
+            );
+        }
+    }
+
+    #[test]
+    fn test_column_row() {
+        for (x, y, enemy_x, enemy_y) in itertools::iproduct!(0..8, 0..8, 0..8, 0..8) {
+            if x == enemy_x && y == enemy_y {
+                continue;
+            }
+            let index = position_to_index(x, y);
+            let enemy_index = position_to_index(enemy_x, enemy_y);
+            let all_pieces = Bitset::zero().with(index).with(enemy_index);
+            let enemy_pieces = Bitset::zero().with(enemy_index);
+            assert_eq!(
+                Line::column(all_pieces, index, enemy_pieces),
+                Line::column_alt(all_pieces, index, enemy_pieces),
+            );
+        }
     }
 }
