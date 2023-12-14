@@ -1,14 +1,129 @@
-use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip};
+use std::{env, fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::Error, fs::{self, OpenOptions}, io::{self, prelude::*}};
 
-fn main() {
+use itertools::Itertools;
+
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+const DEFAULT_REMAINDER: usize = 6;
+
+const USAGE: &'static str = "USAGE: path-to-board black|white|default";
+
+const UCI_ALT_COMMAND_PATH: &'static str = "baby-chess-engine-alt-command";
+
+fn main() -> Result<()> {
+    // Quick and dirty hackable UCI impl.
+
     unsafe { init() };
-    debug_assert_eq!(ROW_2_TO_7.count(), 48);
+    let mut state = State::new();
 
-    let board = Board::start();
-    println!("{}", board);
+    debug_append_line("-----------------------")?;
+    for line in io::stdin().lock().lines() {
+        debug_append_line("---")?;
+        let line = line?;
+        debug_append_line(&format!("in: {line}"))?;
+        let responses = match state.read_eval_respond(&line) {
+            Ok(responses) => responses,
+            Err(err) => {
+                debug_append_line(&format!("eval error: {:#?}", err))?;
+                loop {
+                    // Super hacky
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let responses = try_load_uci_alt_command()?;
+                    if !responses.is_empty() {
+                        break responses;
+                    }
+                }
+            },
+        };
+        for response in responses {
+            debug_append_line(&format!("out: {response}"))?;
+            println!("{response}");
+        }
+    }
+    Ok(())
+}
 
-    let score = board.white_moves(6, None);
+fn try_load_uci_alt_command() -> Result<Vec<String>> {
+    match fs::read_to_string(UCI_ALT_COMMAND_PATH) {
+        Ok(responses) => {
+            fs::File::create(UCI_ALT_COMMAND_PATH)?;
+            Ok(responses.lines().map(|s| s.to_string()).collect::<Vec<_>>())
+        },
+        Err(err) => {
+            debug_append_line(&format!("alt error: {:#?}", err))?;
+            Ok(Vec::new())
+        },
+    }
+}
+
+fn debug_append_line(line: &str) -> Result<()> {
+    let mut f = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(true)
+        .open("baby-chess-engine-input")?;
+    writeln!(f, "{}", line)?;
+    Ok(())
+}
+
+struct State {
+    board: Board,
+}
+
+impl State {
+    fn new() -> Self {
+        Self { board: Board::start() }
+    }
+
+    fn read_eval_respond(&mut self, input: &str) -> Result<Vec<String>> {
+        if input == "uci" {
+            return Ok(vec![
+                "id name Baby Chess Engine".to_string(),
+                "uciok".to_string(),
+            ]);
+        }
+        if input == "isready" {
+            return Ok(vec!["readyok".to_string()])
+        }
+        if input == "ucinewgame" || input == "position startpos" {
+            self.board = Board::start();
+            return Ok(Vec::new());
+        }
+        if input == "quit" {
+            return Err("quit".into());
+        }
+        Err(format!("unknown command '{}'", input).into())
+    }
+}
+
+fn main_old() -> Result<()> {
+    unsafe { init() };
+    let args: Vec<_> = env::args().collect();
+
+    let (Some(_), Some(path), Some(kind)) = (args.get(0), args.get(1), args.get(2)) else {
+        return Err(USAGE.into());
+    };
+    match kind.as_str() {
+        "white" => read_play_print(path, Player::White)?,
+        "black" => read_play_print(path, Player::Black)?,
+        "default" => fs::write(path, Board::start().to_string())?,
+        _ => return Err(USAGE.into()),
+    };
+    Ok(())
+}
+
+fn read_play_print(path: &str, color: Player) -> Result<()> {
+    let board = Board::from_str(&fs::read_to_string(path)?)?;
+    println!("{board}");
+
+    // TODO: en passant
+    let score = match color {
+        Player::White => board.white_moves(DEFAULT_REMAINDER, None),
+        Player::Black => board.black_moves(DEFAULT_REMAINDER, None),
+    };
+
     println!("{}", score.best_move);
+    Ok(())
 }
 
 fn index_to_position(index: u8) -> (u8, u8) {
@@ -164,6 +279,68 @@ impl Bitset {
     }
 }
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PieceKind {
+    Pawn,
+    Bishop,
+    Knight,
+    Rook,
+    Queen,
+    King,
+}
+
+impl PieceKind {
+    fn symbol(self) -> u8 {
+        match self {
+            PieceKind::Pawn => b'P',
+            PieceKind::Bishop => b'B',
+            PieceKind::Knight => b'N',
+            PieceKind::Rook => b'R',
+            PieceKind::Queen => b'Q',
+            PieceKind::King => b'K',
+        }
+    }
+
+    fn from_symbol(symbol: u8) -> Result<(Player, Self)> {
+        match symbol {
+            b'P' => Ok((Player::White, PieceKind::Pawn)),
+            b'B' => Ok((Player::White, PieceKind::Bishop)),
+            b'N' => Ok((Player::White, PieceKind::Knight)),
+            b'R' => Ok((Player::White, PieceKind::Rook)),
+            b'Q' => Ok((Player::White, PieceKind::Queen)),
+            b'K' => Ok((Player::White, PieceKind::King)),
+            b'p' => Ok((Player::Black, PieceKind::Pawn)),
+            b'b' => Ok((Player::Black, PieceKind::Bishop)),
+            b'n' => Ok((Player::Black, PieceKind::Knight)),
+            b'r' => Ok((Player::Black, PieceKind::Rook)),
+            b'q' => Ok((Player::Black, PieceKind::Queen)),
+            b'k' => Ok((Player::Black, PieceKind::King)),
+            _ => Err(format!("unknown symbol '{}'", char::from(symbol)).into()),
+        }
+    }
+
+    fn symbol_white(self) -> u8 {
+        self.symbol().to_ascii_uppercase()
+    }
+
+    fn symbol_black(self) -> u8 {
+        self.symbol().to_ascii_lowercase()
+    }
+}
+
+struct Piece {
+    player: Player,
+    kind: PieceKind,
+}
+
+impl Piece {
+    fn from_symbol(symbol: u8) -> Result<Self> {
+        let (player, kind) = PieceKind::from_symbol(symbol)?;
+        Ok(Self { player, kind })
+    }
+}
+
 struct Indices(Bitset);
 
 impl Iterator for Indices {
@@ -191,6 +368,17 @@ struct PlayerBoard {
 }
 
 impl PlayerBoard {
+    fn empty() -> Self {
+        Self {
+            pawns: Bitset::zero(),
+            bishops: Bitset::zero(),
+            knights: Bitset::zero(),
+            rooks: Bitset::zero(),
+            queens: Bitset::zero(),
+            king: Bitset::zero(),
+        }
+    }
+
     fn bitset(&self) -> Bitset {
         self.pawns | self.bishops | self.knights | self.rooks | self.queens | self.king
     }
@@ -214,73 +402,6 @@ impl PlayerBoard {
     }
 }
 
-const FLAG_WHITE_CAN_CASTLE: u32 = 1;
-const FLAG_BLACK_CAN_CASTLE: u32 = 1 << 1;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Board {
-    black: PlayerBoard,
-    white: PlayerBoard,
-    flags: u32,
-}
-
-impl fmt::Display for Board {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut board = [b'.'; 64];
-
-        fmt_pieces(&mut board, self.white.king, b'K');
-        fmt_pieces(&mut board, self.white.queens, b'Q');
-        fmt_pieces(&mut board, self.white.rooks, b'R');
-        fmt_pieces(&mut board, self.white.bishops, b'B');
-        fmt_pieces(&mut board, self.white.knights, b'N');
-        fmt_pieces(&mut board, self.white.pawns, b'P');
-
-        fmt_pieces(&mut board, self.black.king, b'k');
-        fmt_pieces(&mut board, self.black.queens, b'q');
-        fmt_pieces(&mut board, self.black.rooks, b'r');
-        fmt_pieces(&mut board, self.black.bishops, b'b');
-        fmt_pieces(&mut board, self.black.knights, b'n');
-        fmt_pieces(&mut board, self.black.pawns, b'p');
-
-        fmt_board(&board, f)
-    }
-}
-
-impl fmt::Debug for Board {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-fn fmt_pieces(board: &mut [u8; 64], pieces: Bitset, ch: u8) {
-    for index in pieces.indices() {
-        assert_eq!(board[index as usize], b'.');
-        board[index as usize] = ch;
-    }
-}
-
-fn fmt_board(board: &[u8; 64], f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let board_str = std::str::from_utf8(board).unwrap();
-    for i in (8..=64).step_by(8) {
-        write!(f, "{}\n", &board_str[i-8..i])?;
-    }
-    Ok(())
-}
-
-const ROW_0: Bitset = Bitset(0xff);
-const ROW_1: Bitset = Bitset(0xff << 8);
-const ROW_6: Bitset = Bitset(0xff << 48);
-const ROW_7: Bitset = Bitset(0xff << 56);
-
-const ROW_2_TO_7: Bitset = Bitset(u64::MAX ^ ROW_0.0 ^ ROW_1.0);
-const ROW_0_TO_5: Bitset = Bitset(u64::MAX ^ ROW_6.0 ^ ROW_7.0);
-
-const COLUMN_0: Bitset = Bitset(1 | (1 << 8) | (1 << 16) | (1 << 24) | (1 << 32) | (1 << 40) | (1 << 48) | (1 << 56));
-const COLUMN_7: Bitset = Bitset(COLUMN_0.0 << 7);
-
-const COLUMN_0_TO_6: Bitset = Bitset(u64::MAX ^ COLUMN_7.0);
-const COLUMN_1_TO_7: Bitset = Bitset(u64::MAX ^ COLUMN_0.0);
-
 static mut DIAGONALS_LEFT: [Bitset; 64] = [Bitset(0); 64];
 static mut DIAGONALS_RIGHT: [Bitset; 64] = [Bitset(0); 64];
 static mut KING_MOVES: [Bitset; 64] = [Bitset(0); 64];
@@ -303,6 +424,7 @@ fn knight_move(index: u8) -> Bitset {
 }
 
 unsafe fn init() {
+    debug_assert_eq!(ROW_2_TO_7.count(), 48);
     init_diagonals();
     init_king_moves();
     init_knight_moves();
@@ -573,7 +695,86 @@ impl Moves {
     }
 }
 
+const FLAG_WHITE_CAN_CASTLE: u32 = 1;
+const FLAG_BLACK_CAN_CASTLE: u32 = 1 << 1;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Board {
+    black: PlayerBoard,
+    white: PlayerBoard,
+    flags: u32,
+}
+
+impl fmt::Display for Board {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut board = [b'.'; 64];
+
+        fmt_pieces(&mut board, self.white.king, PieceKind::King.symbol_white());
+        fmt_pieces(&mut board, self.white.queens, PieceKind::Queen.symbol_white());
+        fmt_pieces(&mut board, self.white.rooks, PieceKind::Rook.symbol_white());
+        fmt_pieces(&mut board, self.white.bishops, PieceKind::Bishop.symbol_white());
+        fmt_pieces(&mut board, self.white.knights, PieceKind::Knight.symbol_white());
+        fmt_pieces(&mut board, self.white.pawns, PieceKind::Pawn.symbol_white());
+
+        fmt_pieces(&mut board, self.black.king, PieceKind::King.symbol_black());
+        fmt_pieces(&mut board, self.black.queens, PieceKind::Queen.symbol_black());
+        fmt_pieces(&mut board, self.black.rooks, PieceKind::Rook.symbol_black());
+        fmt_pieces(&mut board, self.black.bishops, PieceKind::Bishop.symbol_black());
+        fmt_pieces(&mut board, self.black.knights, PieceKind::Knight.symbol_black());
+        fmt_pieces(&mut board, self.black.pawns, PieceKind::Pawn.symbol_black());
+
+        fmt_board(&board, f)
+    }
+}
+
+impl fmt::Debug for Board {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+fn fmt_pieces(board: &mut [u8; 64], pieces: Bitset, ch: u8) {
+    for index in pieces.indices() {
+        assert_eq!(board[index as usize], b'.');
+        board[index as usize] = ch;
+    }
+}
+
+fn fmt_board(board: &[u8; 64], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let board_str = std::str::from_utf8(board).unwrap();
+    for i in (8..=64).step_by(8) {
+        write!(f, "{}\n", &board_str[i-8..i])?;
+    }
+    Ok(())
+}
+
+const ROW_0: Bitset = Bitset(0xff);
+const ROW_1: Bitset = Bitset(0xff << 8);
+const ROW_6: Bitset = Bitset(0xff << 48);
+const ROW_7: Bitset = Bitset(0xff << 56);
+
+const ROW_2_TO_7: Bitset = Bitset(u64::MAX ^ ROW_0.0 ^ ROW_1.0);
+const ROW_0_TO_5: Bitset = Bitset(u64::MAX ^ ROW_6.0 ^ ROW_7.0);
+
+const COLUMN_0: Bitset = Bitset(1 | (1 << 8) | (1 << 16) | (1 << 24) | (1 << 32) | (1 << 40) | (1 << 48) | (1 << 56));
+const COLUMN_7: Bitset = Bitset(COLUMN_0.0 << 7);
+
+const COLUMN_0_TO_6: Bitset = Bitset(u64::MAX ^ COLUMN_7.0);
+const COLUMN_1_TO_7: Bitset = Bitset(u64::MAX ^ COLUMN_0.0);
+
 impl Board {
+    fn default_flags() -> u32 {
+        FLAG_BLACK_CAN_CASTLE | FLAG_WHITE_CAN_CASTLE
+    }
+
+    fn empty() -> Self {
+        Self {
+            black: PlayerBoard::empty(),
+            white: PlayerBoard::empty(),
+            flags: Self::default_flags(),
+        }
+    }
+
     fn start() -> Self {
         let black_pawns = (0..8).map(|x| Bitset::from_position(x, 1))
             .fold(Bitset::zero(), |pawns, pawn| pawns | pawn);
@@ -596,10 +797,50 @@ impl Board {
                 king: Bitset::from_position(4, 7),
                 pawns: white_pawns,
             },
-            flags: FLAG_BLACK_CAN_CASTLE | FLAG_WHITE_CAN_CASTLE,
+            flags: Self::default_flags(),
         };
         debug_assert_eq!(board.bitset().count(), 32);
         board
+    }
+
+    fn from_str(s: &str) -> Result<Self> {
+        // TODO: check 8x8
+        let s: String = s.chars().filter(|ch| !ch.is_whitespace()).collect();
+        if s.len() != 64 {
+            return Err(format!("expected 64 character board, got {}", s.len()).into());
+        }
+        dbg!(&s);
+
+        let mut board = Board::empty();
+        for (index, symbol) in s.bytes().enumerate() {
+            let index = u8::try_from(index).unwrap();
+            if symbol == b'.' {
+                continue;
+            }
+
+            let piece = Piece::from_symbol(symbol)?;
+            match piece.player {
+                Player::White => match piece.kind {
+                    PieceKind::Pawn => board.white.pawns.set(index),
+                    PieceKind::Bishop => board.white.bishops.set(index),
+                    PieceKind::Knight => board.white.knights.set(index),
+                    PieceKind::Rook => board.white.rooks.set(index),
+                    PieceKind::Queen => board.white.queens.set(index),
+                    PieceKind::King => board.white.king.set(index),
+                },
+                Player::Black => match piece.kind {
+                    PieceKind::Pawn => board.black.pawns.set(index),
+                    PieceKind::Bishop => board.black.bishops.set(index),
+                    PieceKind::Knight => board.black.knights.set(index),
+                    PieceKind::Rook => board.black.rooks.set(index),
+                    PieceKind::Queen => board.black.queens.set(index),
+                    PieceKind::King => board.black.king.set(index),
+                },
+            }
+        }
+
+        // TODO: check board is valid
+        Ok(board)
     }
 
     fn bitset(&self) -> Bitset {
