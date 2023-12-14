@@ -600,6 +600,8 @@ impl Board {
         let mut context = Context::new(self, remainder);
         self.white_pawns(&mut context, en_passant_index);
         self.white_queens(&mut context);
+        self.white_rooks(&mut context);
+        self.white_bishops(&mut context);
         context.score.finalize()
     }
 
@@ -613,7 +615,117 @@ impl Board {
         let mut context = Context::new(self, remainder);
         self.black_pawns(&mut context, en_passant_index);
         self.black_queens(&mut context);
+        self.black_rooks(&mut context);
+        self.black_bishops(&mut context);
         context.score.finalize()
+    }
+
+    fn white_bishops(&self, context: &mut Context) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.black.bitset();
+
+        for from in self.white.bishops.indices() {
+            let Line { without_capture, with_capture } = Line::bishop(all_pieces, from, enemy_pieces);
+            for to in without_capture.indices() {
+                context.next.white.bishops.mov(from, to);
+                context.score.update_white(
+                    context.next.black_moves(context.remainder, None),
+                    Move::Bishop { player: Player::White, from, to }
+                );
+                context.next.white.bishops = self.white.bishops;
+            }
+            for to in with_capture.indices() {
+                context.next.black.captured(to);
+                context.next.white.bishops.mov(from, to);
+                context.score.update_white(
+                    context.next.black_moves(context.remainder, None),
+                    Move::Bishop { player: Player::White, from, to },
+                );
+                context.next.white.bishops = self.white.bishops;
+                context.next.black = self.black;
+            }
+        }
+    }
+
+    fn black_bishops(&self, context: &mut Context) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.white.bitset();
+
+        for from in self.black.bishops.indices() {
+            let Line { without_capture, with_capture } = Line::bishop(all_pieces, from, enemy_pieces);
+            for to in without_capture.indices() {
+                context.next.black.bishops.mov(from, to);
+                context.score.update_black(
+                    context.next.white_moves(context.remainder, None),
+                    Move::Bishop { player: Player::Black, from, to }
+                );
+                context.next.black.bishops = self.black.bishops;
+            }
+            for to in with_capture.indices() {
+                context.next.white.captured(to);
+                context.next.black.bishops.mov(from, to);
+                context.score.update_black(
+                    context.next.white_moves(context.remainder, None),
+                    Move::Bishop { player: Player::Black, from, to },
+                );
+                context.next.black.bishops = self.black.bishops;
+                context.next.white = self.white;
+            }
+        }
+    }
+
+    fn white_rooks(&self, context: &mut Context) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.black.bitset();
+
+        for from in self.white.rooks.indices() {
+            let Line { without_capture, with_capture } = Line::rook(all_pieces, from, enemy_pieces);
+            for to in without_capture.indices() {
+                context.next.white.rooks.mov(from, to);
+                context.score.update_white(
+                    context.next.black_moves(context.remainder, None),
+                    Move::Rook { player: Player::White, from, to }
+                );
+                context.next.white.rooks = self.white.rooks;
+            }
+            for to in with_capture.indices() {
+                context.next.black.captured(to);
+                context.next.white.rooks.mov(from, to);
+                context.score.update_white(
+                    context.next.black_moves(context.remainder, None),
+                    Move::Rook { player: Player::White, from, to },
+                );
+                context.next.white.rooks = self.white.rooks;
+                context.next.black = self.black;
+            }
+        }
+    }
+
+    fn black_rooks(&self, context: &mut Context) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.white.bitset();
+
+        for from in self.black.rooks.indices() {
+            let Line { without_capture, with_capture } = Line::rook(all_pieces, from, enemy_pieces);
+            for to in without_capture.indices() {
+                context.next.black.rooks.mov(from, to);
+                context.score.update_black(
+                    context.next.white_moves(context.remainder, None),
+                    Move::Rook { player: Player::Black, from, to }
+                );
+                context.next.black.rooks = self.black.rooks;
+            }
+            for to in with_capture.indices() {
+                context.next.white.captured(to);
+                context.next.black.rooks.mov(from, to);
+                context.score.update_black(
+                    context.next.white_moves(context.remainder, None),
+                    Move::Rook { player: Player::Black, from, to },
+                );
+                context.next.black.rooks = self.black.rooks;
+                context.next.white = self.white;
+            }
+        }
     }
 
     fn white_queens(&self, context: &mut Context) {
