@@ -1,129 +1,90 @@
-use std::{env, fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::Error, fs::{self, OpenOptions}, io::{self, prelude::*}};
+use std::{fmt::{self, Binary, Write}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::Error, io::{self, prelude::*}};
 
 use itertools::Itertools;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const DEFAULT_REMAINDER: usize = 6;
-
-const USAGE: &'static str = "USAGE: path-to-board black|white|default";
-
-const UCI_ALT_COMMAND_PATH: &'static str = "baby-chess-engine-alt-command";
+const DEFAULT_REMAINDER: usize = 5;
 
 fn main() -> Result<()> {
-    // Quick and dirty hackable UCI impl.
-
     unsafe { init() };
-    let mut state = State::new();
+    UCI::new().read_eval_print_loop()
+}
 
-    debug_append_line("-----------------------")?;
-    for line in io::stdin().lock().lines() {
-        debug_append_line("---")?;
-        let line = line?;
-        debug_append_line(&format!("in: {line}"))?;
-        let responses = match state.read_eval_respond(&line) {
-            Ok(responses) => responses,
-            Err(err) => {
-                debug_append_line(&format!("eval error: {:#?}", err))?;
-                loop {
-                    // Super hacky
-                    std::thread::sleep(std::time::Duration::from_secs(2));
-                    let responses = try_load_uci_alt_command()?;
-                    if !responses.is_empty() {
-                        break responses;
-                    }
-                }
-            },
-        };
-        for response in responses {
-            debug_append_line(&format!("out: {response}"))?;
-            println!("{response}");
+struct UCI {
+    board: Board,
+    next_move: Color,
+    en_passant_index: Option<u8>,
+}
+
+impl UCI {
+    fn new() -> Self {
+        Self {
+            board: Board::start(),
+            next_move: Color::White,
+            en_passant_index: None,
         }
     }
-    Ok(())
-}
 
-fn try_load_uci_alt_command() -> Result<Vec<String>> {
-    match fs::read_to_string(UCI_ALT_COMMAND_PATH) {
-        Ok(responses) => {
-            fs::File::create(UCI_ALT_COMMAND_PATH)?;
-            Ok(responses.lines().map(|s| s.to_string()).collect::<Vec<_>>())
-        },
-        Err(err) => {
-            debug_append_line(&format!("alt error: {:#?}", err))?;
-            Ok(Vec::new())
-        },
-    }
-}
-
-fn debug_append_line(line: &str) -> Result<()> {
-    let mut f = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(true)
-        .open("baby-chess-engine-input")?;
-    writeln!(f, "{}", line)?;
-    Ok(())
-}
-
-struct State {
-    board: Board,
-}
-
-impl State {
-    fn new() -> Self {
-        Self { board: Board::start() }
+    fn read_eval_print_loop(&mut self) -> Result<()> {
+        for command in io::stdin().lock().lines() {
+            let command = command?;
+            for response in self.read_eval_print(&command)? {
+                println!("{response}");
+            }
+        }
+        Err("unexpected end of input loop".into())
     }
 
-    fn read_eval_respond(&mut self, input: &str) -> Result<Vec<String>> {
-        if input == "uci" {
-            return Ok(vec![
+    fn read_eval_print(&mut self, command: &str) -> Result<Vec<String>> {
+        // TODO: complete UCI implementation
+
+        let split = command.split(' ').collect::<Vec<_>>();
+        let responses = match split.as_slice() {
+            ["uci"] => vec![
                 "id name Baby Chess Engine".to_string(),
                 "uciok".to_string(),
-            ]);
-        }
-        if input == "isready" {
-            return Ok(vec!["readyok".to_string()])
-        }
-        if input == "ucinewgame" || input == "position startpos" {
-            self.board = Board::start();
-            return Ok(Vec::new());
-        }
-        if input == "quit" {
-            return Err("quit".into());
-        }
-        Err(format!("unknown command '{}'", input).into())
+            ],
+            ["isready"] => vec!["readyok".to_string()],
+            ["ucinewgame"] => {
+                self.board = Board::start();
+                self.next_move = Color::White;
+                Vec::new()
+            },
+            // TODO
+            ["position", "startpos", "moves", .., notation] => {
+                self.apply_move(notation)?;
+                Vec::new()
+            },
+            ["go", ..] => {
+                let mov = self.calculate_move()?;
+                vec![format!("bestmove {}", mov.to_long_algebraic_notation()?)]
+            }
+            ["stop"] => vec![],
+            ["quit"] => return Err("quit".into()),
+            _ => return Err(format!("unknown command '{}'", command).into())
+        };
+        Ok(responses)
     }
-}
 
-fn main_old() -> Result<()> {
-    unsafe { init() };
-    let args: Vec<_> = env::args().collect();
+    fn apply_move(&mut self, notation: &str) -> Result<()> {
+        let mov = Move::from_long_algebraic_notation(notation)?;
+        let (color, en_passant_index) = self.board.apply_move(mov)?;
+        self.next_move = color.other();
+        self.en_passant_index = en_passant_index;
+        Ok(())
+    }
 
-    let (Some(_), Some(path), Some(kind)) = (args.get(0), args.get(1), args.get(2)) else {
-        return Err(USAGE.into());
-    };
-    match kind.as_str() {
-        "white" => read_play_print(path, Player::White)?,
-        "black" => read_play_print(path, Player::Black)?,
-        "default" => fs::write(path, Board::start().to_string())?,
-        _ => return Err(USAGE.into()),
-    };
-    Ok(())
-}
-
-fn read_play_print(path: &str, color: Player) -> Result<()> {
-    let board = Board::from_str(&fs::read_to_string(path)?)?;
-    println!("{board}");
-
-    // TODO: en passant
-    let score = match color {
-        Player::White => board.white_moves(DEFAULT_REMAINDER, None),
-        Player::Black => board.black_moves(DEFAULT_REMAINDER, None),
-    };
-
-    println!("{}", score.best_move);
-    Ok(())
+    fn calculate_move(&mut self) -> Result<Move> {
+        let score = match self.next_move {
+            Color::White => self.board.white_moves(DEFAULT_REMAINDER, self.en_passant_index),
+            Color::Black => self.board.black_moves(DEFAULT_REMAINDER, self.en_passant_index),
+        };
+        let (color, en_passant_index) = self.board.apply_move(score.best_move)?;
+        self.next_move = color.other();
+        self.en_passant_index = en_passant_index;
+        Ok(score.best_move)
+    }
 }
 
 fn index_to_position(index: u8) -> (u8, u8) {
@@ -191,7 +152,7 @@ impl Shr<u8> for Bitset {
 impl fmt::Display for Bitset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut board = [b'.'; 64];
-        fmt_pieces(&mut board, self.clone(), b'#');
+        fmt_pieces(&mut board, self.clone(), '#');
         fmt_board(&board, f)
     }
 }
@@ -251,6 +212,11 @@ impl Bitset {
         (self.0 & (1 << index)) != 0
     }
 
+    fn checked_clear(&mut self, index: u8) {
+        assert!(self.has(index));
+        self.clear(index);
+    }
+
     fn clear(&mut self, index: u8) {
         *self = self.without(index);
     }
@@ -258,6 +224,11 @@ impl Bitset {
     fn without(self, index: u8) -> Self {
         debug_assert!(index < 64);
         Self(self.0 & !(1 << index))
+    }
+
+    fn checked_set(&mut self, index: u8) {
+        assert!(!self.has(index));
+        self.set(index);
     }
 
     fn set(&mut self, index: u8) {
@@ -276,68 +247,6 @@ impl Bitset {
 
     fn indices(self) -> Indices {
         Indices(self)
-    }
-}
-
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PieceKind {
-    Pawn,
-    Bishop,
-    Knight,
-    Rook,
-    Queen,
-    King,
-}
-
-impl PieceKind {
-    fn symbol(self) -> u8 {
-        match self {
-            PieceKind::Pawn => b'P',
-            PieceKind::Bishop => b'B',
-            PieceKind::Knight => b'N',
-            PieceKind::Rook => b'R',
-            PieceKind::Queen => b'Q',
-            PieceKind::King => b'K',
-        }
-    }
-
-    fn from_symbol(symbol: u8) -> Result<(Player, Self)> {
-        match symbol {
-            b'P' => Ok((Player::White, PieceKind::Pawn)),
-            b'B' => Ok((Player::White, PieceKind::Bishop)),
-            b'N' => Ok((Player::White, PieceKind::Knight)),
-            b'R' => Ok((Player::White, PieceKind::Rook)),
-            b'Q' => Ok((Player::White, PieceKind::Queen)),
-            b'K' => Ok((Player::White, PieceKind::King)),
-            b'p' => Ok((Player::Black, PieceKind::Pawn)),
-            b'b' => Ok((Player::Black, PieceKind::Bishop)),
-            b'n' => Ok((Player::Black, PieceKind::Knight)),
-            b'r' => Ok((Player::Black, PieceKind::Rook)),
-            b'q' => Ok((Player::Black, PieceKind::Queen)),
-            b'k' => Ok((Player::Black, PieceKind::King)),
-            _ => Err(format!("unknown symbol '{}'", char::from(symbol)).into()),
-        }
-    }
-
-    fn symbol_white(self) -> u8 {
-        self.symbol().to_ascii_uppercase()
-    }
-
-    fn symbol_black(self) -> u8 {
-        self.symbol().to_ascii_lowercase()
-    }
-}
-
-struct Piece {
-    player: Player,
-    kind: PieceKind,
-}
-
-impl Piece {
-    fn from_symbol(symbol: u8) -> Result<Self> {
-        let (player, kind) = PieceKind::from_symbol(symbol)?;
-        Ok(Self { player, kind })
     }
 }
 
@@ -368,17 +277,6 @@ struct PlayerBoard {
 }
 
 impl PlayerBoard {
-    fn empty() -> Self {
-        Self {
-            pawns: Bitset::zero(),
-            bishops: Bitset::zero(),
-            knights: Bitset::zero(),
-            rooks: Bitset::zero(),
-            queens: Bitset::zero(),
-            king: Bitset::zero(),
-        }
-    }
-
     fn bitset(&self) -> Bitset {
         self.pawns | self.bishops | self.knights | self.rooks | self.queens | self.king
     }
@@ -399,6 +297,76 @@ impl PlayerBoard {
             + self.rooks.count()*5
             + self.queens.count()*9;
         score.into()
+    }
+
+    fn which_piece(&self, index: u8) -> Option<Piece> {
+        if self.pawns.has(index) {
+            Some(Piece::Pawn)
+        } else if self.bishops.has(index) {
+            Some(Piece::Bishop)
+        } else if self.knights.has(index) {
+            Some(Piece::Knight)
+        } else if self.rooks.has(index) {
+            Some(Piece::Rook)
+        } else if self.queens.has(index) {
+            Some(Piece::Queen)
+        } else if self.king.has(index) {
+            Some(Piece::King)
+        } else {
+            None
+        }
+    }
+
+    fn remove_piece(&mut self, piece: Piece, index: u8) {
+        match piece {
+            Piece::Pawn => self.pawns.checked_clear(index),
+            Piece::Bishop => self.bishops.checked_clear(index),
+            Piece::Knight => self.knights.checked_clear(index),
+            Piece::Rook => self.rooks.checked_clear(index),
+            Piece::Queen => self.queens.checked_clear(index),
+            Piece::King => self.king.checked_clear(index),
+        }
+    }
+
+    fn place_piece(&mut self, piece: Piece, index: u8) {
+        match piece {
+            Piece::Pawn => self.pawns.checked_set(index),
+            Piece::Bishop => self.bishops.checked_set(index),
+            Piece::Knight => self.knights.checked_set(index),
+            Piece::Rook => self.rooks.checked_set(index),
+            Piece::Queen => self.queens.checked_set(index),
+            Piece::King => self.king.checked_set(index),
+        }
+    }
+
+    fn normal_move(&mut self, enemy: &mut Self, from: u8, to: u8) -> Option<u8> {
+        let piece = self.which_piece(from).unwrap();
+        self.remove_piece(piece, from);
+        enemy.captured(to);
+        self.place_piece(piece, to);
+        self.possible_en_passant(Move::Normal { from, to })
+    }
+
+    fn possible_en_passant(&self, mov: Move) -> Option<u8> {
+        let Move::Normal { from, to } = mov else {
+            return None;
+        };
+        if !self.pawns.has(from) {
+            return None;
+        }
+        let (from_x, from_y) = index_to_position(from);
+        let (to_x, to_y) = index_to_position(to);
+        if from_x == to_x && (from_y+2 == to_y || from_y.checked_sub(2) == Some(to_y)) {
+            Some(to)
+        } else {
+            None
+        }
+    }
+
+    fn promotion_move(&mut self, enemy: &mut Self, piece: Piece, from: u8, to: u8) {
+        self.pawns.checked_clear(from);
+        enemy.captured(to);
+        self.place_piece(piece, to);
     }
 }
 
@@ -709,19 +677,19 @@ impl fmt::Display for Board {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut board = [b'.'; 64];
 
-        fmt_pieces(&mut board, self.white.king, PieceKind::King.symbol_white());
-        fmt_pieces(&mut board, self.white.queens, PieceKind::Queen.symbol_white());
-        fmt_pieces(&mut board, self.white.rooks, PieceKind::Rook.symbol_white());
-        fmt_pieces(&mut board, self.white.bishops, PieceKind::Bishop.symbol_white());
-        fmt_pieces(&mut board, self.white.knights, PieceKind::Knight.symbol_white());
-        fmt_pieces(&mut board, self.white.pawns, PieceKind::Pawn.symbol_white());
+        fmt_pieces(&mut board, self.white.king, Piece::King.to_symbol().to_ascii_uppercase());
+        fmt_pieces(&mut board, self.white.queens, Piece::Queen.to_symbol().to_ascii_uppercase());
+        fmt_pieces(&mut board, self.white.rooks, Piece::Rook.to_symbol().to_ascii_uppercase());
+        fmt_pieces(&mut board, self.white.bishops, Piece::Bishop.to_symbol().to_ascii_uppercase());
+        fmt_pieces(&mut board, self.white.knights, Piece::Knight.to_symbol().to_ascii_uppercase());
+        fmt_pieces(&mut board, self.white.pawns, Piece::Pawn.to_symbol().to_ascii_uppercase());
 
-        fmt_pieces(&mut board, self.black.king, PieceKind::King.symbol_black());
-        fmt_pieces(&mut board, self.black.queens, PieceKind::Queen.symbol_black());
-        fmt_pieces(&mut board, self.black.rooks, PieceKind::Rook.symbol_black());
-        fmt_pieces(&mut board, self.black.bishops, PieceKind::Bishop.symbol_black());
-        fmt_pieces(&mut board, self.black.knights, PieceKind::Knight.symbol_black());
-        fmt_pieces(&mut board, self.black.pawns, PieceKind::Pawn.symbol_black());
+        fmt_pieces(&mut board, self.black.king, Piece::King.to_symbol().to_ascii_lowercase());
+        fmt_pieces(&mut board, self.black.queens, Piece::Queen.to_symbol().to_ascii_lowercase());
+        fmt_pieces(&mut board, self.black.rooks, Piece::Rook.to_symbol().to_ascii_lowercase());
+        fmt_pieces(&mut board, self.black.bishops, Piece::Bishop.to_symbol().to_ascii_lowercase());
+        fmt_pieces(&mut board, self.black.knights, Piece::Knight.to_symbol().to_ascii_lowercase());
+        fmt_pieces(&mut board, self.black.pawns, Piece::Pawn.to_symbol().to_ascii_lowercase());
 
         fmt_board(&board, f)
     }
@@ -733,10 +701,10 @@ impl fmt::Debug for Board {
     }
 }
 
-fn fmt_pieces(board: &mut [u8; 64], pieces: Bitset, ch: u8) {
+fn fmt_pieces(board: &mut [u8; 64], pieces: Bitset, ch: char) {
     for index in pieces.indices() {
         assert_eq!(board[index as usize], b'.');
-        board[index as usize] = ch;
+        board[index as usize] = u8::try_from(ch).unwrap();
     }
 }
 
@@ -767,14 +735,6 @@ impl Board {
         FLAG_BLACK_CAN_CASTLE | FLAG_WHITE_CAN_CASTLE
     }
 
-    fn empty() -> Self {
-        Self {
-            black: PlayerBoard::empty(),
-            white: PlayerBoard::empty(),
-            flags: Self::default_flags(),
-        }
-    }
-
     fn start() -> Self {
         let black_pawns = (0..8).map(|x| Bitset::from_position(x, 1))
             .fold(Bitset::zero(), |pawns, pawn| pawns | pawn);
@@ -803,44 +763,39 @@ impl Board {
         board
     }
 
-    fn from_str(s: &str) -> Result<Self> {
-        // TODO: check 8x8
-        let s: String = s.chars().filter(|ch| !ch.is_whitespace()).collect();
-        if s.len() != 64 {
-            return Err(format!("expected 64 character board, got {}", s.len()).into());
+    fn apply_move(&mut self, mov: Move) -> Result<(Color, Option<u8>)> {
+        // TODO: check move is legal
+        match mov {
+            Move::None => Err("cannot apply none move".into()),
+            Move::Normal { from, to } => {
+                if self.white.bitset().has(from) {
+                    let en_passant_index = self.white.normal_move(&mut self.black, from, to);
+                    Ok((Color::White, en_passant_index))
+                } else if self.black.bitset().has(from) {
+                    let en_passant_index = self.black.normal_move(&mut self.white, from, to);
+                    Ok((Color::Black, en_passant_index))
+                } else {
+                    Err(format!(
+                        "illegal move {}: from empty square",
+                        Move::long_algebraic_notation_normal(from, to),
+                    ).into())
+                }
+            },
+            Move::Promotion { piece, from, to } => {
+                if self.white.pawns.has(from) {
+                    self.white.promotion_move(&mut self.black, piece, from, to);
+                    Ok((Color::White, None))
+                } else if self.black.pawns.has(from) {
+                    self.black.promotion_move(&mut self.white, piece, from, to);
+                    Ok((Color::Black, None))
+                } else {
+                    Err(format!(
+                        "illegal move {}: from square is not a pawn",
+                        Move::long_algebraic_notation_normal(from, to),
+                    ).into())
+                }
+            },
         }
-        dbg!(&s);
-
-        let mut board = Board::empty();
-        for (index, symbol) in s.bytes().enumerate() {
-            let index = u8::try_from(index).unwrap();
-            if symbol == b'.' {
-                continue;
-            }
-
-            let piece = Piece::from_symbol(symbol)?;
-            match piece.player {
-                Player::White => match piece.kind {
-                    PieceKind::Pawn => board.white.pawns.set(index),
-                    PieceKind::Bishop => board.white.bishops.set(index),
-                    PieceKind::Knight => board.white.knights.set(index),
-                    PieceKind::Rook => board.white.rooks.set(index),
-                    PieceKind::Queen => board.white.queens.set(index),
-                    PieceKind::King => board.white.king.set(index),
-                },
-                Player::Black => match piece.kind {
-                    PieceKind::Pawn => board.black.pawns.set(index),
-                    PieceKind::Bishop => board.black.bishops.set(index),
-                    PieceKind::Knight => board.black.knights.set(index),
-                    PieceKind::Rook => board.black.rooks.set(index),
-                    PieceKind::Queen => board.black.queens.set(index),
-                    PieceKind::King => board.black.king.set(index),
-                },
-            }
-        }
-
-        // TODO: check board is valid
-        Ok(board)
     }
 
     fn bitset(&self) -> Bitset {
@@ -888,7 +843,7 @@ impl Board {
         }
 
         self.debug_check();
-        if remainder <= 1 {
+        if remainder == 0 {
             return Score::board(self);
         }
         let remainder = remainder-1;
@@ -909,7 +864,7 @@ impl Board {
         }
 
         self.debug_check();
-        if remainder <= 1 {
+        if remainder == 0 {
             return Score::board(self);
         }
         let remainder = remainder-1;
@@ -936,7 +891,7 @@ impl Board {
             context.next.white.king.mov(from, to);
             context.score.update_white(
                 context.next.black_moves(context.remainder, None),
-                Move::King { player: Player::White, from, to }
+                Move::Normal { from, to },
             );
             context.next.white.king = self.white.king;
         }
@@ -946,7 +901,7 @@ impl Board {
             context.next.white.king.mov(from, to);
             context.score.update_white(
                 context.next.black_moves(context.remainder, None),
-                Move::King { player: Player::White, from, to }
+                Move::Normal { from, to },
             );
             context.next.white.king = self.white.king;
             context.next.black = self.black;
@@ -965,7 +920,7 @@ impl Board {
             context.next.black.king.mov(from, to);
             context.score.update_black(
                 context.next.white_moves(context.remainder, None),
-                Move::King { player: Player::Black, from, to }
+                Move::Normal { from, to },
             );
             context.next.black.king = self.black.king;
         }
@@ -975,7 +930,7 @@ impl Board {
             context.next.black.king.mov(from, to);
             context.score.update_black(
                 context.next.white_moves(context.remainder, None),
-                Move::King { player: Player::Black, from, to }
+                Move::Normal { from, to },
             );
             context.next.black.king = self.black.king;
             context.next.white = self.white;
@@ -992,7 +947,7 @@ impl Board {
                 context.next.white.knights.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Knight { player: Player::White, from, to }
+                    Move::Normal { from, to },
                 );
                 context.next.white.knights = self.white.knights;
             }
@@ -1001,7 +956,7 @@ impl Board {
                 context.next.white.knights.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Knight { player: Player::White, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.white.knights = self.white.knights;
                 context.next.black = self.black;
@@ -1019,7 +974,7 @@ impl Board {
                 context.next.black.knights.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Knight { player: Player::Black, from, to }
+                    Move::Normal { from, to },
                 );
                 context.next.black.knights = self.black.knights;
             }
@@ -1028,7 +983,7 @@ impl Board {
                 context.next.black.knights.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Knight { player: Player::Black, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.black.knights = self.black.knights;
                 context.next.white = self.white;
@@ -1046,7 +1001,7 @@ impl Board {
                 context.next.white.bishops.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Bishop { player: Player::White, from, to }
+                    Move::Normal { from, to },
                 );
                 context.next.white.bishops = self.white.bishops;
             }
@@ -1055,7 +1010,7 @@ impl Board {
                 context.next.white.bishops.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Bishop { player: Player::White, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.white.bishops = self.white.bishops;
                 context.next.black = self.black;
@@ -1073,7 +1028,7 @@ impl Board {
                 context.next.black.bishops.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Bishop { player: Player::Black, from, to }
+                    Move::Normal { from, to },
                 );
                 context.next.black.bishops = self.black.bishops;
             }
@@ -1082,7 +1037,7 @@ impl Board {
                 context.next.black.bishops.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Bishop { player: Player::Black, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.black.bishops = self.black.bishops;
                 context.next.white = self.white;
@@ -1100,7 +1055,7 @@ impl Board {
                 context.next.white.rooks.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Rook { player: Player::White, from, to }
+                    Move::Normal { from, to },
                 );
                 context.next.white.rooks = self.white.rooks;
             }
@@ -1109,7 +1064,7 @@ impl Board {
                 context.next.white.rooks.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Rook { player: Player::White, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.white.rooks = self.white.rooks;
                 context.next.black = self.black;
@@ -1127,7 +1082,7 @@ impl Board {
                 context.next.black.rooks.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Rook { player: Player::Black, from, to }
+                    Move::Normal { from, to },
                 );
                 context.next.black.rooks = self.black.rooks;
             }
@@ -1136,7 +1091,7 @@ impl Board {
                 context.next.black.rooks.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Rook { player: Player::Black, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.black.rooks = self.black.rooks;
                 context.next.white = self.white;
@@ -1154,7 +1109,7 @@ impl Board {
                 context.next.white.queens.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Queen { player: Player::White, from, to }
+                    Move::Normal { from, to },
                 );
                 context.next.white.queens = self.white.queens;
             }
@@ -1163,7 +1118,7 @@ impl Board {
                 context.next.white.queens.mov(from, to);
                 context.score.update_white(
                     context.next.black_moves(context.remainder, None),
-                    Move::Queen { player: Player::White, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.white.queens = self.white.queens;
                 context.next.black = self.black;
@@ -1181,7 +1136,7 @@ impl Board {
                 context.next.black.queens.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Queen { player: Player::Black, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.black.queens = self.black.queens;
             }
@@ -1190,7 +1145,7 @@ impl Board {
                 context.next.black.queens.mov(from, to);
                 context.score.update_black(
                     context.next.white_moves(context.remainder, None),
-                    Move::Queen { player: Player::Black, from, to },
+                    Move::Normal { from, to },
                 );
                 context.next.black.queens = self.black.queens;
                 context.next.white = self.white;
@@ -1220,7 +1175,7 @@ impl Board {
         context.next.white.pawns = context.next.white.pawns.without(from).with(to);
         context.score.update_white(
             context.next.black_moves(context.remainder, en_passant_index),
-            Move::Pawn { player: Player::White, from, to },
+            Move::Normal { from, to },
         );
         context.next.white.pawns = self.white.pawns;
     }
@@ -1236,7 +1191,7 @@ impl Board {
         context.next.white.pawns = context.next.white.pawns.without(from).with(to);
         context.score.update_white(
             context.next.black_moves(context.remainder, None), 
-            Move::Pawn { player: Player::White, from, to },
+            Move::Normal { from, to },
         );
         context.next.white.pawns = self.white.pawns;
         context.next.black = self.black;
@@ -1275,28 +1230,28 @@ impl Board {
         context.next.white.queens.set(to);
         context.score.update_white(
             context.next.black_moves(context.remainder, None), 
-            Move::Pawn { player: Player::White, from, to },
+            Move::Promotion { piece: Piece::Queen, from, to },
         );
         context.next.white.queens = self.white.queens;
 
         context.next.white.rooks.set(to);
         context.score.update_white(
             context.next.black_moves(context.remainder, None), 
-            Move::Pawn { player: Player::White, from, to },
+            Move::Promotion { piece: Piece::Rook, from, to },
         );
         context.next.white.rooks = self.white.rooks;
 
         context.next.white.knights.set(to);
         context.score.update_white(
             context.next.black_moves(context.remainder, None), 
-            Move::Pawn { player: Player::White, from, to },
+            Move::Promotion { piece: Piece::Knight, from, to },
         );
         context.next.white.knights = self.white.knights;
 
         context.next.white.bishops.set(to);
         context.score.update_white(
             context.next.black_moves(context.remainder, None), 
-            Move::Pawn { player: Player::White, from, to },
+            Move::Promotion { piece: Piece::Bishop, from, to },
         );
         context.next.white.bishops = self.white.bishops;
     }
@@ -1405,7 +1360,7 @@ impl Board {
         context.next.black.pawns = context.next.black.pawns.without(from).with(to);
         context.score.update_black(
             context.next.white_moves(context.remainder, en_passant_index),
-            Move::Pawn { player: Player::Black, from, to },
+            Move::Normal { from, to },
         );
         context.next.black.pawns = self.black.pawns;
     }
@@ -1421,7 +1376,7 @@ impl Board {
         context.next.black.pawns = context.next.black.pawns.without(from).with(to);
         context.score.update_black(
             context.next.white_moves(context.remainder, None),
-            Move::Pawn { player: Player::Black, from, to },
+            Move::Normal { from, to },
         );
         context.next.black.pawns = self.black.pawns;
         context.next.white = self.white;
@@ -1460,28 +1415,28 @@ impl Board {
         context.next.black.queens.set(to);
         context.score.update_black(
             context.next.white_moves(context.remainder, None), 
-            Move::Pawn { player: Player::Black, from, to },
+            Move::Promotion { piece: Piece::Queen, from, to },
         );
         context.next.black.queens = self.black.queens;
 
         context.next.black.rooks.set(to);
         context.score.update_black(
             context.next.white_moves(context.remainder, None), 
-            Move::Pawn { player: Player::Black, from, to },
+            Move::Promotion { piece: Piece::Rook, from, to },
         );
         context.next.black.rooks = self.black.rooks;
 
         context.next.black.knights.set(to);
         context.score.update_black(
             context.next.white_moves(context.remainder, None), 
-            Move::Pawn { player: Player::Black, from, to },
+            Move::Promotion { piece: Piece::Knight, from, to },
         );
         context.next.black.knights = self.black.knights;
 
         context.next.black.bishops.set(to);
         context.score.update_black(
             context.next.white_moves(context.remainder, None), 
-            Move::Pawn { player: Player::Black, from, to },
+            Move::Promotion { piece: Piece::Bishop, from, to },
         );
         context.next.black.bishops = self.black.bishops;
     }
@@ -1570,15 +1525,42 @@ impl Board {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Player {
-    Black,
-    White,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Piece {
+    Pawn,
+    Bishop,
+    Knight,
+    Rook,
+    Queen,
+    King,
 }
 
-impl fmt::Display for Player {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, f)
+impl Piece {
+    fn from_symbol(symbol: char) -> Result<Self> {
+        match symbol {
+            'p' => Ok(Piece::Pawn),
+            'b' => Ok(Piece::Bishop),
+            'n' => Ok(Piece::Knight),
+            'r' => Ok(Piece::Rook),
+            'q' => Ok(Piece::Queen),
+            'k' => Ok(Piece::King),
+            _ => Err(format!("unknown symbol '{}'", char::from(symbol)).into()),
+        }
+    }
+
+    fn to_symbol(self) -> char {
+        match self {
+            Piece::Pawn => 'p',
+            Piece::Bishop => 'b',
+            Piece::Knight => 'n',
+            Piece::Rook => 'r',
+            Piece::Queen => 'q',
+            Piece::King => 'k',
+        }
+    }
+
+    fn can_promote_to(&self) -> bool {
+        matches!(*self, Piece::Queen | Piece::Rook | Piece::Knight | Piece::Bishop)
     }
 }
 
@@ -1586,68 +1568,79 @@ impl fmt::Display for Player {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Move {
     None,
-    King { player: Player, from: u8, to: u8 },
-    Queen { player: Player, from: u8, to: u8 },
-    Rook { player: Player, from: u8, to: u8 },
-    Bishop { player: Player, from: u8, to: u8 },
-    Knight { player: Player, from: u8, to: u8 },
-    Pawn { player: Player, from: u8, to: u8 },
-    CastleLong(Player),
-    CastleShort(Player),
+    Normal { from: u8, to: u8 },
+    Promotion { piece: Piece, from: u8, to: u8 },
 }
 
 impl Move {
-    fn player(&self) -> Option<Player> {
-        match *self {
-            Move::None => None,
-            Move::King { player, .. } => Some(player),
-            Move::Queen { player, .. } => Some(player),
-            Move::Rook { player, .. } => Some(player),
-            Move::Bishop { player, .. } => Some(player),
-            Move::Knight { player, .. } => Some(player),
-            Move::Pawn { player, .. } => Some(player),
-            Move::CastleLong(player) => Some(player),
-            Move::CastleShort(player) => Some(player),
+    fn from_long_algebraic_notation(notation: &str) -> Result<Self> {
+        if notation.len() != 4 && notation.len() != 5 {
+            return Err(format!("expected chess notation, got '{}'", notation).into());
         }
+        let notation = notation.as_bytes();
+        let from = Self::chess_position_to_index(&notation[..2])?;
+        let to = Self::chess_position_to_index(&notation[2..])?;
+        if notation.len() == 5 {
+            let symbol = char::from(notation[4]);
+            let promote_to = Piece::from_symbol(symbol)?;
+            if !promote_to.can_promote_to() {
+                return Err(format!("cannot promote to {:?}", promote_to).into());
+            }
+            Ok(Self::Promotion { piece: promote_to, from, to })
+        } else {
+            Ok(Self::Normal { from, to })            
+        }
+    }
+
+    fn to_long_algebraic_notation(&self) -> Result<String> {
+        match *self {
+            Move::None => Err("cannot convert none move to long algebraic notation".into()),
+            Move::Normal { from, to } => Ok(Self::long_algebraic_notation_normal(from, to)),
+            Move::Promotion { piece, from, to } => {
+                assert!(piece.can_promote_to());
+                let mut s = Self::long_algebraic_notation_normal(from, to);
+                s.push(piece.to_symbol());
+                Ok(s)
+            },
+        }
+    }
+
+    fn index_to_chess_position(index: u8) -> (char, char) {
+        let (x, y) = index_to_position(index);
+        ((b'a' + x).into(), char::from_digit((8-y).into(), 10).unwrap())
+    }
+
+    fn chess_position_to_index(raw_position: &[u8]) -> Result<u8> {
+        assert_eq!(raw_position.len(), 2);
+        let (raw_x, raw_y) = (raw_position[0], raw_position[1]);
+        if !(b'a'..=b'h').contains(&raw_x) {
+            return Err(format!("expected file, got '{}'", char::from(raw_x)).into());
+        }
+        if !(b'1'..=b'8').contains(&raw_y) {
+            return Err(format!("expected rank, got '{}'", char::from(raw_y)).into());
+        }
+        let (x, y) = (raw_x - b'a', 7 - (raw_y - b'1'));
+        Ok(position_to_index(x, y))
+    }
+
+    fn long_algebraic_notation_normal(from_index: u8, to_index: u8) -> String {
+        let (from_x, from_y) = Self::index_to_chess_position(from_index);
+        let (to_x, to_y) = Self::index_to_chess_position(to_index);
+        format!("{from_x}{from_y}{to_x}{to_y}")
     }
 }
 
-fn index_to_chess_position(index: u8) -> (char, char) {
-    let (x, y) = index_to_position(index);
-    ((b'a' + x).into(), char::from_digit((8-y).into(), 10).unwrap())
+enum Color {
+    White,
+    Black,
 }
 
-fn fmt_move(f: &mut fmt::Formatter<'_>, player: Player, figure: &str, from_index: u8, to_index: u8) -> fmt::Result {
-    let (from_x, from_y) = index_to_chess_position(from_index);
-    let (to_x, to_y) = index_to_chess_position(to_index);
-    write!(f, "{player} {figure}: {from_x}{from_y} -> {to_x}{to_y}")
-}
-
-impl fmt::Display for Move {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Move::Pawn { player, from, to } =>
-                fmt_move(f, player, "Pawn", from, to),
-            Move::King { player, from, to } =>
-                fmt_move(f, player, "King", from, to),
-            Move::Queen { player, from, to } =>
-                fmt_move(f, player, "Queen", from, to),
-            Move::Rook { player, from, to } =>
-                fmt_move(f, player, "Rook", from, to),
-            Move::Bishop { player, from, to } =>
-                fmt_move(f, player, "Bishop", from, to),
-            Move::Knight { player, from, to } =>
-                fmt_move(f, player, "Knight", from, to),
-            Move::CastleLong(player) => write!(f, "{player} O-O-O"),
-            Move::CastleShort(player) => write!(f, "{player} O-O"),
-            Move::None => write!(f, "None")
+impl Color {
+    fn other(&self) -> Self {
+        match self {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
         }
-    }
-}
-
-impl fmt::Debug for Move {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
     }
 }
 
@@ -1702,7 +1695,6 @@ impl Score {
     }
 
     fn update_white(&mut self, other: Score, mov: Move) {
-        debug_assert_eq!(mov.player(), Some(Player::White));
         if self.best_move == Move::None || other.best_points < self.best_points {
             self.best_points = other.best_points;
             self.best_move = mov;
@@ -1710,7 +1702,6 @@ impl Score {
     }
 
     fn update_black(&mut self, other: Score, mov: Move) {
-        debug_assert_eq!(mov.player(), Some(Player::Black));
         if self.best_move == Move::None || other.best_points > self.best_points {
             self.best_points = other.best_points;
             self.best_move = mov;
