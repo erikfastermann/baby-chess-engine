@@ -176,6 +176,10 @@ impl Bitset {
         Self(u64::MAX)
     }
 
+    fn from_index(index: u8) -> Self {
+        Self::zero().with(index)
+    }
+
     fn from_position(x: u8, y: u8) -> Self {
         Self::zero().with(position_to_index(x, y))
     }
@@ -214,6 +218,10 @@ impl Bitset {
     fn has(self, index: u8) -> bool {
         debug_assert!(index < 64);
         (self.0 & (1 << index)) != 0
+    }
+
+    fn overlap(self, other: Self) -> bool {
+        (self & other) != Bitset::zero()
     }
 
     fn checked_clear(&mut self, index: u8) {
@@ -389,6 +397,21 @@ impl PlayerBoard {
         enemy.captured(to);
         self.place_piece(piece, to);
     }
+
+    fn has_check(&self, enemy: &Self, self_color: Color) -> bool {
+        let pawns = match self_color {
+            Color::White => {
+                let board = Board::from_white_black_empty_flags(self, enemy);
+                Moves::white_pawns_without_en_passant(&board)
+            }
+            Color::Black => {
+                let board = Board::from_white_black_empty_flags(enemy, self);
+                Moves::black_pawns_without_en_passant(&board)
+            },
+        };
+        let moves = Moves::all_non_pawn_moves(self, enemy).combine(&pawns);
+        moves.captures.overlap(enemy.king)
+    }
 }
 
 static mut DIAGONALS_LEFT: [Bitset; 64] = [Bitset(0); 64];
@@ -497,6 +520,13 @@ struct Moves {
 }
 
 impl Moves {
+    fn empty() -> Self {
+        Self {
+            moves: Bitset::zero(),
+            captures: Bitset::zero(),
+        }
+    }
+
     fn row(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
         let (_, y) = index_to_position(index);
         let before = Bitset::before(index);
@@ -643,28 +673,37 @@ impl Moves {
         Self { moves: moves, captures: captures_builder & enemy_pieces }
     }
 
+    fn combine(&self, other: &Self) -> Self {
+        Self {
+            moves: self.moves | other.moves,
+            captures: self.captures | other.captures,
+        }
+    }
+
     fn bishop(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        let Self { moves: left_without, captures: left_with } =
-            Self::diagonal_left(all_pieces, index, enemy_pieces);
-        let Self { moves: right_without, captures: right_with } =
-            Self::diagonal_right(all_pieces, index, enemy_pieces);
-        Self { moves: left_without|right_without, captures: left_with|right_with }
+        Self::diagonal_left(all_pieces, index, enemy_pieces)
+            .combine(&Self::diagonal_right(all_pieces, index, enemy_pieces))
     }
 
     fn rook(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        let Self { moves: row_without, captures: row_with } =
-            Self::row(all_pieces, index, enemy_pieces);
-        let Self { moves: column_without, captures: column_with } =
-            Self::column(all_pieces, index, enemy_pieces);
-        Self { moves: row_without|column_without, captures: row_with|column_with }
+        Self::row(all_pieces, index, enemy_pieces)
+            .combine(&Self::column(all_pieces, index, enemy_pieces))
     }
 
     fn queen(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        let Self { moves: bishop_without, captures: bishop_with } =
-            Self::bishop(all_pieces, index, enemy_pieces);
-        let Self { moves: rook_without, captures: rook_with } =
-            Self::rook(all_pieces, index, enemy_pieces);
-        Self { moves: bishop_without|rook_without, captures: bishop_with|rook_with }
+        Self::bishop(all_pieces, index, enemy_pieces)
+            .combine(&Self::rook(all_pieces, index, enemy_pieces))
+    }
+
+    fn all_non_pawn_moves(we: &PlayerBoard, enemy: &PlayerBoard) -> Self {
+        let enemy_pieces = enemy.bitset();
+        let all_pieces = we.bitset() | enemy_pieces;
+        we.queens.indices().map(|index| Moves::queen(all_pieces, index, enemy_pieces))
+            .chain(we.rooks.indices().map(|index| Moves::rook(all_pieces, index, enemy_pieces)))
+            .chain(we.bishops.indices().map(|index| Moves::bishop(all_pieces, index, enemy_pieces)))
+            .chain(we.knights.indices().map(|index| Moves::knight(all_pieces, index, enemy_pieces)))
+            .chain(we.king.indices().map(|index| Moves::king(all_pieces, index, enemy_pieces)))
+            .fold(Moves::empty(), |a, b| a.combine(&b))
     }
 
     fn king(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
@@ -682,16 +721,110 @@ impl Moves {
             captures: possible_moves & enemy_pieces,
         }
     }
+
+    fn white_pawns_without_en_passant(board: &Board) -> Self {
+        let moves = Self::white_pawns_single_step_without_promote(board)
+            | Self::white_pawns_single_step_with_promote(board)
+            | Self::white_pawns_double_step(board);
+        let captures = Self::white_pawns_capture_left_without_promote(board)
+            | Self::white_pawns_capture_right_without_promote(board)
+            | Self::white_pawns_capture_left_with_promote(board)
+            | Self::white_pawns_capture_right_with_promote(board);
+        Self { moves, captures }
+    }
+
+    fn white_pawns_single_step_without_promote(board: &Board) -> Bitset {
+        let all_pieces = board.bitset();
+        ((board.white.pawns & ROW_2_TO_7) >> 8) & !all_pieces
+    }
+
+    fn white_pawns_single_step_with_promote(board: &Board) -> Bitset {
+        let all_pieces = board.bitset();
+        ((board.white.pawns & ROW_1) >> 8) & !all_pieces
+    }
+
+    fn white_pawns_double_step(board: &Board) -> Bitset {
+        let all_pieces = board.bitset();
+        let a = ((board.white.pawns & ROW_6) >> 8) & !all_pieces;
+        (a >> 8) & !all_pieces
+    }
+
+    fn white_pawns_capture_left_without_promote(board: &Board) -> Bitset {
+        let black_pieces = board.black.bitset();
+        ((board.white.pawns & COLUMN_1_TO_7 & ROW_2_TO_7) >> 9) & black_pieces
+    }
+
+    fn white_pawns_capture_right_without_promote(board: &Board) -> Bitset {
+        let black_pieces = board.black.bitset();
+        ((board.white.pawns & COLUMN_0_TO_6 & ROW_2_TO_7) >> 7) & black_pieces
+    }
+
+    fn white_pawns_capture_left_with_promote(board: &Board) -> Bitset {
+        let black_pieces = board.black.bitset();
+        ((board.white.pawns & COLUMN_1_TO_7 & ROW_1) >> 9) & black_pieces
+    }
+
+    fn white_pawns_capture_right_with_promote(board: &Board) -> Bitset {
+        let black_pieces = board.black.bitset();
+        ((board.white.pawns & COLUMN_0_TO_6 & ROW_1) >> 7) & black_pieces
+    }
+
+    fn black_pawns_without_en_passant(board: &Board) -> Self {
+        let moves = Self::black_pawns_single_step_without_promote(board)
+            | Self::black_pawns_single_step_with_promote(board)
+            | Self::black_pawns_double_step(board);
+        let captures = Self::black_pawns_capture_left_without_promote(board)
+            | Self::black_pawns_capture_right_without_promote(board)
+            | Self::black_pawns_capture_left_with_promote(board)
+            | Self::black_pawns_capture_right_with_promote(board);
+        Self { moves, captures }
+    }
+
+    fn black_pawns_single_step_without_promote(board: &Board) -> Bitset {
+        let all_pieces = board.bitset();
+        ((board.black.pawns & ROW_0_TO_5) << 8) & !all_pieces
+    }
+
+    fn black_pawns_single_step_with_promote(board: &Board) -> Bitset {
+        let all_pieces: Bitset = board.bitset();
+        ((board.black.pawns & ROW_6) << 8) & !all_pieces
+    }
+
+    fn black_pawns_double_step(board: &Board) -> Bitset {
+        let all_pieces = board.bitset();
+        let row = ((board.black.pawns & ROW_1) << 8) & !all_pieces;
+        (row << 8) & !all_pieces
+    }
+
+    fn black_pawns_capture_left_without_promote(board: &Board) -> Bitset {
+        let white_pieces = board.white.bitset();
+        ((board.black.pawns & COLUMN_1_TO_7 & ROW_0_TO_5) << 7) & white_pieces
+    }
+
+    fn black_pawns_capture_right_without_promote(board: &Board) -> Bitset {
+        let white_pieces = board.white.bitset();
+        ((board.black.pawns & COLUMN_0_TO_6 & ROW_0_TO_5) << 9) & white_pieces
+    }
+
+    fn black_pawns_capture_left_with_promote(board: &Board) -> Bitset {
+        let white_pieces = board.white.bitset();
+        ((board.black.pawns & COLUMN_1_TO_7 & ROW_6) << 7) & white_pieces
+    }
+
+    fn black_pawns_capture_right_with_promote(board: &Board) -> Bitset {
+        let white_pieces = board.white.bitset();
+        ((board.black.pawns & COLUMN_0_TO_6 & ROW_6) << 9) & white_pieces
+    }
 }
 
-const FLAG_WHITE_CAN_CASTLE: u32 = 1;
-const FLAG_BLACK_CAN_CASTLE: u32 = 1 << 1;
+const FLAG_WHITE_CAN_CASTLE_INDEX: u8 = 0;
+const FLAG_BLACK_CAN_CASTLE_INDEX: u8 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Board {
     black: PlayerBoard,
     white: PlayerBoard,
-    flags: u32,
+    flags: Bitset,
 }
 
 impl fmt::Display for Board {
@@ -751,9 +884,25 @@ const COLUMN_7: Bitset = Bitset(COLUMN_0.0 << 7);
 const COLUMN_0_TO_6: Bitset = Bitset(u64::MAX ^ COLUMN_7.0);
 const COLUMN_1_TO_7: Bitset = Bitset(u64::MAX ^ COLUMN_0.0);
 
+const WHITE_KING_STARTING_INDEX: u8 = 7*8 + 4;
+const WHITE_ROOK_LEFT_STARTING_INDEX: u8 = 7*8;
+const WHITE_ROOK_RIGHT_STARTING_INDEX: u8 = 7*8 + 7;
+
+const BLACK_KING_STARTING_INDEX: u8 = 4;
+const BLACK_ROOK_LEFT_STARTING_INDEX: u8 = 0;
+const BLACK_ROOK_RIGHT_STARTING_INDEX: u8 = 7;
+
 impl Board {
-    fn default_flags() -> u32 {
-        FLAG_BLACK_CAN_CASTLE | FLAG_WHITE_CAN_CASTLE
+    fn from_white_black_empty_flags(white: &PlayerBoard, black: &PlayerBoard) -> Self {
+        Self {
+            black: black.clone(),
+            white: white.clone(),
+            flags: Bitset::zero(),
+        }
+    }
+
+    fn default_flags() -> Bitset {
+        Bitset::zero().with(FLAG_WHITE_CAN_CASTLE_INDEX).with(FLAG_BLACK_CAN_CASTLE_INDEX)
     }
 
     fn start() -> Self {
@@ -763,24 +912,24 @@ impl Board {
             .fold(Bitset::zero(), |pawns, pawn| pawns | pawn);
         let board = Self {
             black: PlayerBoard {
-                rooks: Bitset::from_position(0, 0) | Bitset::from_position(7, 0),
+                rooks: Bitset::from_index(BLACK_ROOK_LEFT_STARTING_INDEX) | Bitset::from_index(BLACK_ROOK_RIGHT_STARTING_INDEX),
                 knights: Bitset::from_position(1, 0) | Bitset::from_position(6, 0),
                 bishops: Bitset::from_position(2, 0) | Bitset::from_position(5, 0),
                 queens: Bitset::from_position(3, 0),
-                king: Bitset::from_position(4, 0),
+                king: Bitset::from_index(BLACK_KING_STARTING_INDEX),
                 pawns: black_pawns,
             },
             white: PlayerBoard {
-                rooks: Bitset::from_position(0, 7) | Bitset::from_position(7, 7),
+                rooks: Bitset::from_index(WHITE_ROOK_LEFT_STARTING_INDEX) | Bitset::from_index(WHITE_ROOK_RIGHT_STARTING_INDEX),
                 knights: Bitset::from_position(1, 7) | Bitset::from_position(6, 7),
                 bishops: Bitset::from_position(2, 7) | Bitset::from_position(5, 7),
                 queens: Bitset::from_position(3, 7),
-                king: Bitset::from_position(4, 7),
+                king: Bitset::from_index(WHITE_KING_STARTING_INDEX),
                 pawns: white_pawns,
             },
             flags: Self::default_flags(),
         };
-        debug_assert_eq!(board.bitset().count(), 32);
+        board.debug_check();
         board
     }
 
@@ -788,34 +937,78 @@ impl Board {
         // TODO: check move is legal
         match mov {
             Move::None => Err("cannot apply none move".into()),
-            Move::Normal { from, to } => {
-                if self.white.bitset().has(from) {
-                    let en_passant_index = self.white.normal_move(&mut self.black, from, to);
-                    Ok((Color::White, en_passant_index))
-                } else if self.black.bitset().has(from) {
-                    let en_passant_index = self.black.normal_move(&mut self.white, from, to);
-                    Ok((Color::Black, en_passant_index))
-                } else {
-                    Err(format!(
-                        "illegal move {}: from empty square",
-                        Move::long_algebraic_notation_normal(from, to),
-                    ).into())
-                }
-            },
-            Move::Promotion { piece, from, to } => {
-                if self.white.pawns.has(from) {
-                    self.white.promotion_move(&mut self.black, piece, from, to);
-                    Ok((Color::White, None))
-                } else if self.black.pawns.has(from) {
-                    self.black.promotion_move(&mut self.white, piece, from, to);
-                    Ok((Color::Black, None))
-                } else {
-                    Err(format!(
-                        "illegal move {}: from square is not a pawn",
-                        Move::long_algebraic_notation_normal(from, to),
-                    ).into())
-                }
-            },
+            Move::Normal { from, to } => self.apply_move_normal(from, to),
+            Move::Promotion { piece, from, to } => self.apply_move_promotion(piece, from, to),
+        }
+    }
+
+    fn apply_move_normal(&mut self, from: u8, to: u8) -> Result<(Color, Option<u8>)> {
+        if self.white.bitset().has(from) {
+            if self.white_apply_move_castle(from, to) {
+                Ok((Color::White, None))
+            } else {
+                // TODO
+                let en_passant_index = self.white.normal_move(&mut self.black, from, to);
+                Ok((Color::White, en_passant_index))
+            }
+        } else if self.black.bitset().has(from) {
+            if self.black_apply_move_castle(from, to) {
+                Ok((Color::Black, None))
+            } else {
+                // TODO
+                let en_passant_index = self.black.normal_move(&mut self.white, from, to);
+                Ok((Color::Black, en_passant_index))
+            }
+        } else {
+            Err(format!(
+                "illegal move {}: from square empty",
+                Move::long_algebraic_notation_normal(from, to),
+            ).into())
+        }
+    }
+
+    fn white_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
+        if from != WHITE_KING_STARTING_INDEX || !self.white_castle_allowed() {
+            return false;
+        }
+        if to == from-2 {
+            self.white_castle_left_apply();
+            true
+        } else if to == from+2 {
+            self.white_castle_right_apply();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn black_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
+        if from != BLACK_KING_STARTING_INDEX || !self.black_castle_allowed() {
+            return false;
+        }
+        if to == from-2 {
+            self.black_castle_left_apply();
+            true
+        } else if to == from+2 {
+            self.black_castle_right_apply();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn apply_move_promotion(&mut self, piece: Piece, from: u8, to: u8) -> Result<(Color, Option<u8>)> {
+        if self.white.pawns.has(from) {
+            self.white.promotion_move(&mut self.black, piece, from, to);
+            Ok((Color::White, None))
+        } else if self.black.pawns.has(from) {
+            self.black.promotion_move(&mut self.white, piece, from, to);
+            Ok((Color::Black, None))
+        } else {
+            Err(format!(
+                "illegal move {}: from square is not a pawn",
+                Move::long_algebraic_notation_normal(from, to),
+            ).into())
         }
     }
 
@@ -917,6 +1110,7 @@ impl Board {
         self.white_bishops(&mut context);
         self.white_knights(&mut context);
         self.white_king(&mut context);
+        self.white_castle(&mut context);
         context.score.finalize()
     }
 
@@ -938,6 +1132,7 @@ impl Board {
         self.black_bishops(&mut context);
         self.black_knights(&mut context);
         self.black_king(&mut context);
+        self.black_castle(&mut context);
         context.score.finalize()
     }
 
@@ -1029,6 +1224,198 @@ impl Board {
             |player_board| &mut player_board.queens,
             Moves::queen,
         );
+    }
+
+    fn white_castle_allowed(&self) -> bool {
+        self.flags.has(FLAG_WHITE_CAN_CASTLE_INDEX)
+    }
+
+    fn white_castle_disable(&mut self) {
+        self.flags.clear(FLAG_WHITE_CAN_CASTLE_INDEX)
+    }
+
+    fn white_castle_enable(&mut self) {
+        self.flags.set(FLAG_WHITE_CAN_CASTLE_INDEX)
+    }
+
+    fn black_castle_allowed(&self) -> bool {
+        self.flags.has(FLAG_BLACK_CAN_CASTLE_INDEX)
+    }
+
+    fn black_castle_disable(&mut self) {
+        self.flags.clear(FLAG_BLACK_CAN_CASTLE_INDEX)
+    }
+
+    fn black_castle_enable(&mut self) {
+        self.flags.set(FLAG_BLACK_CAN_CASTLE_INDEX)
+    }
+
+    fn white_castle(&self, context: &mut Context) {
+        if !self.white_castle_allowed() {
+            return;
+        }
+        let all_pieces = self.bitset();
+        let king_index = self.white.king.first_index();
+        if king_index != WHITE_KING_STARTING_INDEX {
+            return;
+        };
+
+        if self.white.rooks.has(WHITE_ROOK_RIGHT_STARTING_INDEX)
+            && !all_pieces.has(position_to_index(5, 7))
+            && !all_pieces.has(position_to_index(6, 7)) {
+            self.white_castle_right(context);
+        }
+
+        if self.white.rooks.has(WHITE_ROOK_LEFT_STARTING_INDEX)
+            && !all_pieces.has(position_to_index(3, 7))
+            && !all_pieces.has(position_to_index(2, 7))
+            && !all_pieces.has(position_to_index(1, 7)) {
+            self.white_castle_left(context);
+        }
+    }
+
+    fn white_castle_right_apply(&mut self) -> Move {
+        let (king_from, king_to) = (WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX+2);
+        let (rook_from, rook_to) = (WHITE_ROOK_RIGHT_STARTING_INDEX, position_to_index(5, 7));
+        self.white.king.mov(king_from, king_to);
+        self.white.rooks.mov(rook_from, rook_to);
+        self.white_castle_disable();
+        Move::Normal { from: king_from, to: king_to }
+    }
+
+    fn white_castle_left_apply(&mut self) -> Move {
+        let (king_from, king_to) = (WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX-2);
+        let (rook_from, rook_to) = (WHITE_ROOK_LEFT_STARTING_INDEX, position_to_index(3, 7));
+        self.white.king.mov(king_from, king_to);
+        self.white.rooks.mov(rook_from, rook_to);
+        self.white_castle_disable();
+        Move::Normal { from: king_from, to: king_to }
+    }
+
+    fn white_castle_reset(&self, context: &mut Context) {
+        context.next.white_castle_enable();
+        context.next.white.rooks = self.white.rooks;
+        context.next.white.king = self.white.king;
+    }
+
+    fn white_castle_right(&self, context: &mut Context) {
+        for shift in 0..=2 {
+            context.next.white.king.mov(WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX+shift);
+            let check = context.next.black.has_check(&context.next.white, Color::Black);
+            context.next.white.king = self.white.king;
+            if check {
+                return;
+            }
+        }
+
+        let mov = context.next.white_castle_right_apply();
+        context.score.update_white(
+            context.next.black_moves(context.remainder, None),
+            mov,
+        );
+        self.white_castle_reset(context);
+    }
+
+    fn white_castle_left(&self, context: &mut Context) {
+        for shift in 0..=2 {
+            context.next.white.king.mov(WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX-shift);
+            let check = context.next.black.has_check(&context.next.white, Color::Black);
+            context.next.white.king = self.white.king;
+            if check {
+                return;
+            }
+        }
+
+        let mov = context.next.white_castle_left_apply();
+        context.score.update_white(
+            context.next.black_moves(context.remainder, None),
+            mov,
+        );
+        self.white_castle_reset(context);
+    }
+
+    fn black_castle(&self, context: &mut Context) {
+        if !self.black_castle_allowed() {
+            return;
+        }
+        let all_pieces = self.bitset();
+        let king_index = self.black.king.first_index();
+        if king_index != BLACK_KING_STARTING_INDEX {
+            return;
+        };
+
+        if self.black.rooks.has(BLACK_ROOK_RIGHT_STARTING_INDEX)
+            && !all_pieces.has(position_to_index(5, 0))
+            && !all_pieces.has(position_to_index(6, 0)) {
+            self.black_castle_right(context);
+        }
+
+        if self.black.rooks.has(BLACK_ROOK_LEFT_STARTING_INDEX)
+            && !all_pieces.has(position_to_index(3, 0))
+            && !all_pieces.has(position_to_index(2, 0))
+            && !all_pieces.has(position_to_index(1, 0)) {
+            self.black_castle_left(context);
+        }
+    }
+
+    fn black_castle_right_apply(&mut self) -> Move {
+        let (king_from, king_to) = (BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX+2);
+        let (rook_from, rook_to) = (BLACK_ROOK_RIGHT_STARTING_INDEX, position_to_index(5, 0));
+        self.black.king.mov(king_from, king_to);
+        self.black.rooks.mov(rook_from, rook_to);
+        self.black_castle_disable();
+        Move::Normal { from: king_from, to: king_to }
+    }
+
+    fn black_castle_left_apply(&mut self) -> Move {
+        let (king_from, king_to) = (BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX-2);
+        let (rook_from, rook_to) = (BLACK_ROOK_LEFT_STARTING_INDEX, position_to_index(3, 0));
+        self.black.king.mov(king_from, king_to);
+        self.black.rooks.mov(rook_from, rook_to);
+        self.black_castle_disable();
+        Move::Normal { from: king_from, to: king_to }
+    }
+
+    fn black_castle_reset(&self, context: &mut Context) {
+        context.next.black_castle_enable();
+        context.next.black.rooks = self.black.rooks;
+        context.next.black.king = self.black.king;
+    }
+
+    fn black_castle_right(&self, context: &mut Context) {
+        for shift in 0..=2 {
+            context.next.black.king.mov(BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX+shift);
+            let check = context.next.white.has_check(&context.next.black, Color::White);
+            context.next.black.king = self.black.king;
+            if check {
+                return;
+            }
+        }
+
+        let mov = context.next.black_castle_right_apply();
+        context.score.update_black(
+            context.next.white_moves(context.remainder, None),
+            mov,
+        );
+        self.black_castle_reset(context);
+    }
+
+    fn black_castle_left(&self, context: &mut Context) {
+        for shift in 0..=2 {
+            context.next.black.king.mov(BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX-shift);
+            let check = context.next.white.has_check(&context.next.black, Color::White);
+            context.next.black.king = self.black.king;
+            if check {
+                return;
+            }
+        }
+
+        let mov = context.next.black_castle_left_apply();
+        context.score.update_black(
+            context.next.white_moves(context.remainder, None),
+            mov,
+        );
+        self.black_castle_reset(context);
     }
 
     fn white_pawns(&self, context: &mut Context, en_passant_index: Option<u8>) {
@@ -1135,54 +1522,34 @@ impl Board {
     }
 
     fn white_pawns_move_without_promote(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-
-        let single_step = ((self.white.pawns & ROW_2_TO_7) >> 8) & !all_pieces;
-        for index in single_step.indices() {
+        for index in Moves::white_pawns_single_step_without_promote(self).indices() {
             self.white_pawn_move(context, index+8, index, None);
         }
-
-        let double_step = {
-            let a = ((self.white.pawns & ROW_6) >> 8) & !all_pieces;
-            (a >> 8) & !all_pieces
-        };
-        for index in double_step.indices() {
+        for index in Moves::white_pawns_double_step(self).indices() {
             self.white_pawn_move(context, index+16, index, Some(index));
         }
     }
 
     fn white_pawns_capture_without_promote(&self, context: &mut Context) {
-        let black_pieces = self.black.bitset();
-
-        let capture_right = ((self.white.pawns & COLUMN_0_TO_6 & ROW_2_TO_7) >> 7) & black_pieces;
-        for index in capture_right.indices() {
+        for index in Moves::white_pawns_capture_right_without_promote(self).indices() {
             self.white_pawn_capture(context, index, index+7, index);
         }
-
-        let capture_left = ((self.white.pawns & COLUMN_1_TO_7 & ROW_2_TO_7) >> 9) & black_pieces;
-        for index in capture_left.indices() {
+        for index in Moves::white_pawns_capture_left_without_promote(self).indices() {
             self.white_pawn_capture(context, index, index+9, index);
         }
     }
 
     fn white_pawns_move_with_promote(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let step = ((self.white.pawns & ROW_1) >> 8) & !all_pieces;
-        for index in step.indices() {
+        for index in Moves::white_pawns_single_step_with_promote(self).indices() {
             self.white_pawn_promote(context, index+8, index);
         }
     }
 
     fn white_pawns_capture_with_promote(&self, context: &mut Context) {
-        let black_pieces = self.black.bitset();
-
-        let capture_right = ((self.white.pawns & COLUMN_0_TO_6 & ROW_1) >> 7) & black_pieces;
-        for index in capture_right.indices() {
+        for index in Moves::white_pawns_capture_right_with_promote(self).indices() {
             self.white_pawn_capture_promote(context, index+7, index);
         }
-
-        let capture_left = ((self.white.pawns & COLUMN_1_TO_7 & ROW_1) >> 9) & black_pieces;
-        for index in capture_left.indices() {
+        for index in Moves::white_pawns_capture_left_with_promote(self).indices() {
             self.white_pawn_capture_promote(context, index+9, index);
         }
     }
@@ -1320,54 +1687,34 @@ impl Board {
     }
 
     fn black_pawns_move_without_promote(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-
-        let single_step = ((self.black.pawns & ROW_0_TO_5) << 8) & !all_pieces;
-        for index in single_step.indices() {
+        for index in Moves::black_pawns_single_step_without_promote(self).indices() {
             self.black_pawn_move(context, index-8, index, None);
         }
-
-        let double_step = {
-            let a = ((self.black.pawns & ROW_1) << 8) & !all_pieces;
-            (a << 8) & !all_pieces
-        };
-        for index in double_step.indices() {
+        for index in Moves::black_pawns_double_step(self).indices() {
             self.black_pawn_move(context, index-16, index, Some(index));
         }
     }
 
     fn black_pawns_capture_without_promote(&self, context: &mut Context) {
-        let white_pieces = self.white.bitset();
-
-        let capture_right = ((self.black.pawns & COLUMN_0_TO_6 & ROW_0_TO_5) << 9) & white_pieces;
-        for index in capture_right.indices() {
+        for index in Moves::black_pawns_capture_right_without_promote(self).indices() {
             self.black_pawn_capture(context, index, index-9, index);
         }
-
-        let capture_left = ((self.black.pawns & COLUMN_1_TO_7 & ROW_0_TO_5) << 7) & white_pieces;
-        for index in capture_left.indices() {
+        for index in Moves::black_pawns_capture_left_without_promote(self).indices() {
             self.black_pawn_capture(context, index, index-7, index);
         }
     }
 
     fn black_pawns_move_with_promote(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let step = ((self.black.pawns & ROW_6) << 8) & !all_pieces;
-        for index in step.indices() {
+        for index in Moves::black_pawns_single_step_with_promote(self).indices() {
             self.black_pawn_promote(context, index-8, index);
         }
     }
 
     fn black_pawns_capture_with_promote(&self, context: &mut Context) {
-        let white_pieces = self.black.bitset();
-
-        let capture_right = ((self.black.pawns & COLUMN_0_TO_6 & ROW_6) << 9) & white_pieces;
-        for index in capture_right.indices() {
+        for index in Moves::black_pawns_capture_right_with_promote(self).indices() {
             self.black_pawn_capture_promote(context, index-9, index);
         }
-
-        let capture_left = ((self.black.pawns & COLUMN_1_TO_7 & ROW_6) << 7) & white_pieces;
-        for index in capture_left.indices() {
+        for index in Moves::black_pawns_capture_left_with_promote(self).indices() {
             self.black_pawn_capture_promote(context, index-7, index);
         }
     }
@@ -1627,5 +1974,22 @@ mod tests {
                 Moves::column_alt(all_pieces, index, enemy_pieces),
             );
         }
+    }
+
+    #[test]
+    fn test_has_check() {
+        unsafe { init() };
+
+        let mut board = Board::start();
+        assert!(!board.white.has_check(&board.black, Color::White));
+        assert!(!board.black.has_check(&board.white, Color::Black));
+
+        board.black.queens.mov(
+            board.black.queens.first_index(),
+            board.white.queens.first_index(),
+        );
+        board.white.captured(board.white.queens.first_index());
+        assert!(!board.white.has_check(&board.black, Color::White));
+        assert!(board.black.has_check(&board.white, Color::Black));
     }
 }
