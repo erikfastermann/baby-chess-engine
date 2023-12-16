@@ -13,7 +13,7 @@ fn main() -> Result<()> {
 
 struct UCI {
     board: Board,
-    next_move: Color,
+    next_move_color: Color,
     en_passant_index: Option<u8>,
 }
 
@@ -21,7 +21,7 @@ impl UCI {
     fn new() -> Self {
         Self {
             board: Board::start(),
-            next_move: Color::White,
+            next_move_color: Color::White,
             en_passant_index: None,
         }
     }
@@ -47,13 +47,12 @@ impl UCI {
             ],
             ["isready"] => vec!["readyok".to_string()],
             ["ucinewgame"] => {
-                self.board = Board::start();
-                self.next_move = Color::White;
+                self.reset();
                 Vec::new()
             },
-            // TODO
-            ["position", "startpos", "moves", .., notation] => {
-                self.apply_move(notation)?;
+            ["position", "startpos", "moves", raw_moves @ ..] => {
+                // TODO: fen
+                self.apply_moves(raw_moves)?;
                 Vec::new()
             },
             ["go", ..] => {
@@ -67,22 +66,27 @@ impl UCI {
         Ok(responses)
     }
 
-    fn apply_move(&mut self, notation: &str) -> Result<()> {
-        let mov = Move::from_long_algebraic_notation(notation)?;
-        let (color, en_passant_index) = self.board.apply_move(mov)?;
-        self.next_move = color.other();
-        self.en_passant_index = en_passant_index;
+    fn reset(&mut self) {
+        self.board = Board::start();
+        self.next_move_color = Color::White;
+    }
+
+    fn apply_moves(&mut self, raw_moves: &[&str]) -> Result<()> {
+        self.reset();
+        for raw_move in raw_moves {
+            let mov = Move::from_long_algebraic_notation(raw_move)?;
+            let (color, en_passant_index) = self.board.apply_move(mov)?;
+            self.next_move_color = color.other();
+            self.en_passant_index = en_passant_index;
+        }
         Ok(())
     }
 
     fn calculate_move(&mut self) -> Result<Move> {
-        let score = match self.next_move {
+        let score = match self.next_move_color {
             Color::White => self.board.white_moves(DEFAULT_REMAINDER, self.en_passant_index),
             Color::Black => self.board.black_moves(DEFAULT_REMAINDER, self.en_passant_index),
         };
-        let (color, en_passant_index) = self.board.apply_move(score.best_move)?;
-        self.next_move = color.other();
-        self.en_passant_index = en_passant_index;
         Ok(score.best_move)
     }
 }
