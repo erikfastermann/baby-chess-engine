@@ -281,6 +281,23 @@ struct PlayerBoard {
 }
 
 impl PlayerBoard {
+    fn debug_check(&self) {
+        let count = self.pawns.count()
+            + self.bishops.count()
+            + self.knights.count()
+            + self.rooks.count()
+            + self.queens.count()
+            + self.king.count();
+        debug_assert_eq!(count, self.bitset().count());
+
+        debug_assert_eq!((self.pawns & ROW_0).count(), 0);
+        debug_assert_eq!((self.pawns & ROW_7).count(), 0);
+
+        debug_assert_eq!(self.king.count(), 1);
+        debug_assert!(self.pawns.count() <= 8);
+        debug_assert!(self.bitset().count() <= 16);
+    }
+
     fn bitset(&self) -> Bitset {
         self.pawns | self.bishops | self.knights | self.rooks | self.queens | self.king
     }
@@ -807,38 +824,79 @@ impl Board {
     }
 
     fn debug_check(&self) {
-        let white_count = self.white.pawns.count()
-            + self.white.bishops.count()
-            + self.white.knights.count()
-            + self.white.rooks.count()
-            + self.white.queens.count()
-            + self.white.king.count();
-        debug_assert_eq!(white_count, self.white.bitset().count());
-
-        let black_count = self.black.pawns.count()
-            + self.black.bishops.count()
-            + self.black.knights.count()
-            + self.black.rooks.count()
-            + self.black.queens.count()
-            + self.black.king.count();
-        debug_assert_eq!(black_count, self.black.bitset().count());
-
-        debug_assert_eq!(black_count + white_count, self.bitset().count());
-
-        debug_assert_eq!((self.white.pawns & ROW_0).count(), 0);
-        debug_assert_eq!((self.white.pawns & ROW_7).count(), 0);
-        debug_assert_eq!((self.black.pawns & ROW_0).count(), 0);
-        debug_assert_eq!((self.black.pawns & ROW_7).count(), 0);
-
-        debug_assert_eq!(self.white.king.count(), 1);
-        debug_assert_eq!(self.black.king.count(), 1);
-
-        debug_assert!(self.white.pawns.count() <= 8);
-        debug_assert!(self.black.pawns.count() <= 8);
-
-        debug_assert!(self.white.bitset().count() <= 16);
-        debug_assert!(self.black.bitset().count() <= 16);
+        self.white.debug_check();
+        self.black.debug_check();
+        debug_assert_eq!(
+            self.white.bitset().count() + self.black.bitset().count(),
+            self.bitset().count(),
+        );
         debug_assert!(self.bitset().count() <= 32);
+    }
+
+    fn white_apply_moves(
+        &self,
+        context: &mut Context,
+        get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
+        get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
+        get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
+    ) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.black.bitset();
+
+        for from in get_piece_bitset(&self.white).indices() {
+            let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
+            for to in moves.indices() {
+                get_piece_bitset_mut(&mut context.next.white).mov(from, to);
+                context.score.update_white(
+                    context.next.black_moves(context.remainder, None),
+                    Move::Normal { from, to },
+                );
+                *get_piece_bitset_mut(&mut context.next.white) = *get_piece_bitset(&self.white);
+            }
+            for to in captures.indices() {
+                context.next.black.captured(to);
+                get_piece_bitset_mut(&mut context.next.white).mov(from, to);
+                context.score.update_white(
+                    context.next.black_moves(context.remainder, None),
+                    Move::Normal { from, to },
+                );
+                *get_piece_bitset_mut(&mut context.next.white) = *get_piece_bitset(&self.white);
+                context.next.black = self.black;
+            }
+        }
+    }
+
+    fn black_apply_moves(
+        &self,
+        context: &mut Context,
+        get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
+        get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
+        get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
+    ) {
+        let all_pieces = self.bitset();
+        let enemy_pieces = self.white.bitset();
+
+        for from in get_piece_bitset(&self.black).indices() {
+            let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
+            for to in moves.indices() {
+                get_piece_bitset_mut(&mut context.next.black).mov(from, to);
+                context.score.update_black(
+                    context.next.white_moves(context.remainder, None),
+                    Move::Normal { from, to },
+                );
+                *get_piece_bitset_mut(&mut context.next.black) = *get_piece_bitset(&self.black);
+            }
+            for to in captures.indices() {
+                context.next.white.captured(to);
+                get_piece_bitset_mut(&mut context.next.black).mov(from, to);
+                context.score.update_black(
+                    context.next.white_moves(context.remainder, None),
+                    Move::Normal { from, to },
+                );
+                *get_piece_bitset_mut(&mut context.next.black) = *get_piece_bitset(&self.black);
+                context.next.white = self.white;
+            }
+        }
     }
 
     fn white_moves(&self, remainder: usize, en_passant_index: Option<u8>) -> Score {
@@ -884,277 +942,93 @@ impl Board {
     }
 
     fn white_king(&self, context: &mut Context) {
-        let from = self.white.king.first_index();
-        let Moves { moves, captures }  = Moves::king(
-            self.bitset(),
-            from,
-            self.black.bitset(),
+        self.white_apply_moves(
+            context,
+            |player_board| &player_board.king,
+            |player_board| &mut player_board.king,
+            Moves::king,
         );
-
-        for to in moves.indices() {
-            context.next.white.king.mov(from, to);
-            context.score.update_white(
-                context.next.black_moves(context.remainder, None),
-                Move::Normal { from, to },
-            );
-            context.next.white.king = self.white.king;
-        }
-
-        for to in captures.indices() {
-            context.next.black.captured(to);
-            context.next.white.king.mov(from, to);
-            context.score.update_white(
-                context.next.black_moves(context.remainder, None),
-                Move::Normal { from, to },
-            );
-            context.next.white.king = self.white.king;
-            context.next.black = self.black;
-        }
     }
 
     fn black_king(&self, context: &mut Context) {
-        let from = self.black.king.first_index();
-        let Moves { moves, captures }  = Moves::king(
-            self.bitset(),
-            from,
-            self.white.bitset(),
+        self.black_apply_moves(
+            context,
+            |player_board| &player_board.king,
+            |player_board| &mut player_board.king,
+            Moves::king,
         );
-
-        for to in moves.indices() {
-            context.next.black.king.mov(from, to);
-            context.score.update_black(
-                context.next.white_moves(context.remainder, None),
-                Move::Normal { from, to },
-            );
-            context.next.black.king = self.black.king;
-        }
-
-        for to in captures.indices() {
-            context.next.white.captured(to);
-            context.next.black.king.mov(from, to);
-            context.score.update_black(
-                context.next.white_moves(context.remainder, None),
-                Move::Normal { from, to },
-            );
-            context.next.black.king = self.black.king;
-            context.next.white = self.white;
-        }
     }
 
     fn white_knights(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.black.bitset();
-
-        for from in self.white.knights.indices() {
-            let Moves { moves, captures } = Moves::knight(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.white.knights.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.knights = self.white.knights;
-            }
-            for to in captures.indices() {
-                context.next.black.captured(to);
-                context.next.white.knights.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.knights = self.white.knights;
-                context.next.black = self.black;
-            }
-        }
+        self.white_apply_moves(
+            context,
+            |player_board| &player_board.knights,
+            |player_board| &mut player_board.knights,
+            Moves::knight,
+        );
     }
 
     fn black_knights(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.white.bitset();
-
-        for from in self.black.knights.indices() {
-            let Moves { moves, captures } = Moves::knight(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.black.knights.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.knights = self.black.knights;
-            }
-            for to in captures.indices() {
-                context.next.white.captured(to);
-                context.next.black.knights.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.knights = self.black.knights;
-                context.next.white = self.white;
-            }
-        }
+        self.black_apply_moves(
+            context,
+            |player_board| &player_board.knights,
+            |player_board| &mut player_board.knights,
+            Moves::knight,
+        );
     }
 
     fn white_bishops(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.black.bitset();
-
-        for from in self.white.bishops.indices() {
-            let Moves { moves, captures } = Moves::bishop(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.white.bishops.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.bishops = self.white.bishops;
-            }
-            for to in captures.indices() {
-                context.next.black.captured(to);
-                context.next.white.bishops.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.bishops = self.white.bishops;
-                context.next.black = self.black;
-            }
-        }
+        self.white_apply_moves(
+            context,
+            |player_board| &player_board.bishops,
+            |player_board| &mut player_board.bishops,
+            Moves::bishop,
+        );
     }
 
     fn black_bishops(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.white.bitset();
-
-        for from in self.black.bishops.indices() {
-            let Moves { moves, captures } = Moves::bishop(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.black.bishops.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.bishops = self.black.bishops;
-            }
-            for to in captures.indices() {
-                context.next.white.captured(to);
-                context.next.black.bishops.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.bishops = self.black.bishops;
-                context.next.white = self.white;
-            }
-        }
+        self.black_apply_moves(
+            context,
+            |player_board| &player_board.bishops,
+            |player_board| &mut player_board.bishops,
+            Moves::bishop,
+        );
     }
 
     fn white_rooks(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.black.bitset();
-
-        for from in self.white.rooks.indices() {
-            let Moves { moves, captures } = Moves::rook(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.white.rooks.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.rooks = self.white.rooks;
-            }
-            for to in captures.indices() {
-                context.next.black.captured(to);
-                context.next.white.rooks.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.rooks = self.white.rooks;
-                context.next.black = self.black;
-            }
-        }
+        self.white_apply_moves(
+            context,
+            |player_board| &player_board.rooks,
+            |player_board| &mut player_board.rooks,
+            Moves::rook,
+        );
     }
 
     fn black_rooks(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.white.bitset();
-
-        for from in self.black.rooks.indices() {
-            let Moves { moves, captures } = Moves::rook(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.black.rooks.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.rooks = self.black.rooks;
-            }
-            for to in captures.indices() {
-                context.next.white.captured(to);
-                context.next.black.rooks.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.rooks = self.black.rooks;
-                context.next.white = self.white;
-            }
-        }
+        self.black_apply_moves(
+            context,
+            |player_board| &player_board.rooks,
+            |player_board| &mut player_board.rooks,
+            Moves::rook,
+        );
     }
 
     fn white_queens(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.black.bitset();
-
-        for from in self.white.queens.indices() {
-            let Moves { moves, captures } = Moves::queen(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.white.queens.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.queens = self.white.queens;
-            }
-            for to in captures.indices() {
-                context.next.black.captured(to);
-                context.next.white.queens.mov(from, to);
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.white.queens = self.white.queens;
-                context.next.black = self.black;
-            }
-        }
+        self.white_apply_moves(
+            context,
+            |player_board| &player_board.queens,
+            |player_board| &mut player_board.queens,
+            Moves::queen,
+        );
     }
 
     fn black_queens(&self, context: &mut Context) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.white.bitset();
-
-        for from in self.black.queens.indices() {
-            let Moves { moves, captures } = Moves::queen(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                context.next.black.queens.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.queens = self.black.queens;
-            }
-            for to in captures.indices() {
-                context.next.white.captured(to);
-                context.next.black.queens.mov(from, to);
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-                context.next.black.queens = self.black.queens;
-                context.next.white = self.white;
-            }
-        }
+        self.black_apply_moves(
+            context,
+            |player_board| &player_board.queens,
+            |player_board| &mut player_board.queens,
+            Moves::queen,
+        );
     }
 
     fn white_pawns(&self, context: &mut Context, en_passant_index: Option<u8>) {
