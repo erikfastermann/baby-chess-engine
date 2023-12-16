@@ -817,8 +817,10 @@ impl Moves {
     }
 }
 
-const FLAG_WHITE_CAN_CASTLE_INDEX: u8 = 0;
-const FLAG_BLACK_CAN_CASTLE_INDEX: u8 = 1;
+const FLAG_WHITE_CAN_CASTLE_LEFT_INDEX: u8 = 0;
+const FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX: u8 = 1;
+const FLAG_BLACK_CAN_CASTLE_LEFT_INDEX: u8 = 2;
+const FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX: u8 = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Board {
@@ -902,7 +904,11 @@ impl Board {
     }
 
     fn default_flags() -> Bitset {
-        Bitset::zero().with(FLAG_WHITE_CAN_CASTLE_INDEX).with(FLAG_BLACK_CAN_CASTLE_INDEX)
+        Bitset::zero()
+            .with(FLAG_WHITE_CAN_CASTLE_LEFT_INDEX)
+            .with(FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX)
+            .with(FLAG_BLACK_CAN_CASTLE_LEFT_INDEX)
+            .with(FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX)
     }
 
     fn start() -> Self {
@@ -944,21 +950,23 @@ impl Board {
 
     fn apply_move_normal(&mut self, from: u8, to: u8) -> Result<(Color, Option<u8>)> {
         if self.white.bitset().has(from) {
-            if self.white_apply_move_castle(from, to) {
-                Ok((Color::White, None))
+            let en_passant_index = if self.white_apply_move_castle(from, to) {
+                None
             } else {
-                // TODO
                 let en_passant_index = self.white.normal_move(&mut self.black, from, to);
-                Ok((Color::White, en_passant_index))
-            }
+                self.white_disable_castle(from, to);
+                en_passant_index
+            };
+            Ok((Color::White, en_passant_index))
         } else if self.black.bitset().has(from) {
-            if self.black_apply_move_castle(from, to) {
-                Ok((Color::Black, None))
+            let en_passant_index = if self.black_apply_move_castle(from, to) {
+                None
             } else {
-                // TODO
                 let en_passant_index = self.black.normal_move(&mut self.white, from, to);
-                Ok((Color::Black, en_passant_index))
-            }
+                self.black_disable_castle(from, to);
+                en_passant_index
+            };
+            Ok((Color::Black, en_passant_index))
         } else {
             Err(format!(
                 "illegal move {}: from square empty",
@@ -967,14 +975,36 @@ impl Board {
         }
     }
 
+    fn white_disable_castle(&mut self, from: u8, to: u8) {
+        if from == WHITE_KING_STARTING_INDEX || to == WHITE_KING_STARTING_INDEX {
+            self.white_castle_any_disable();
+        } else if from == WHITE_ROOK_LEFT_STARTING_INDEX || to == WHITE_ROOK_LEFT_STARTING_INDEX {
+            self.white_castle_left_disable();
+        } else if from == WHITE_ROOK_RIGHT_STARTING_INDEX || to == WHITE_ROOK_RIGHT_STARTING_INDEX {
+            self.white_castle_right_disable();
+        }
+    }
+
+    fn black_disable_castle(&mut self, from: u8, to: u8) {
+        if from == BLACK_KING_STARTING_INDEX || to == BLACK_KING_STARTING_INDEX {
+            self.black_castle_any_disable();
+        } else if from == BLACK_ROOK_LEFT_STARTING_INDEX || to == BLACK_ROOK_LEFT_STARTING_INDEX {
+            self.black_castle_left_disable();
+        } else if from == BLACK_ROOK_RIGHT_STARTING_INDEX || to == BLACK_ROOK_RIGHT_STARTING_INDEX {
+            self.black_castle_right_disable();
+        }
+    }
+
     fn white_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
-        if from != WHITE_KING_STARTING_INDEX || !self.white_castle_allowed() {
+        if from != WHITE_KING_STARTING_INDEX || !self.white_castle_any_allowed() {
             return false;
         }
         if to == from-2 {
+            assert!(self.white_castle_left_allowed());
             self.white_castle_left_apply();
             true
         } else if to == from+2 {
+            assert!(self.white_castle_right_allowed());
             self.white_castle_right_apply();
             true
         } else {
@@ -983,13 +1013,15 @@ impl Board {
     }
 
     fn black_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
-        if from != BLACK_KING_STARTING_INDEX || !self.black_castle_allowed() {
+        if from != BLACK_KING_STARTING_INDEX || !self.black_castle_any_allowed() {
             return false;
         }
         if to == from-2 {
+            assert!(self.black_castle_left_allowed());
             self.black_castle_left_apply();
             true
         } else if to == from+2 {
+            assert!(self.black_castle_right_allowed());
             self.black_castle_right_apply();
             true
         } else {
@@ -1226,32 +1258,58 @@ impl Board {
         );
     }
 
-    fn white_castle_allowed(&self) -> bool {
-        self.flags.has(FLAG_WHITE_CAN_CASTLE_INDEX)
+    fn white_castle_any_allowed(&self) -> bool {
+        self.white_castle_left_allowed() || self.white_castle_right_allowed()
     }
 
-    fn white_castle_disable(&mut self) {
-        self.flags.clear(FLAG_WHITE_CAN_CASTLE_INDEX)
+    fn white_castle_any_disable(&mut self) {
+        self.white_castle_left_disable();
+        self.white_castle_right_disable();
     }
 
-    fn white_castle_enable(&mut self) {
-        self.flags.set(FLAG_WHITE_CAN_CASTLE_INDEX)
+    fn white_castle_left_allowed(&self) -> bool {
+        self.flags.has(FLAG_WHITE_CAN_CASTLE_LEFT_INDEX)
     }
 
-    fn black_castle_allowed(&self) -> bool {
-        self.flags.has(FLAG_BLACK_CAN_CASTLE_INDEX)
+    fn white_castle_left_disable(&mut self) {
+        self.flags.clear(FLAG_WHITE_CAN_CASTLE_LEFT_INDEX)
     }
 
-    fn black_castle_disable(&mut self) {
-        self.flags.clear(FLAG_BLACK_CAN_CASTLE_INDEX)
+    fn white_castle_right_allowed(&self) -> bool {
+        self.flags.has(FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX)
     }
 
-    fn black_castle_enable(&mut self) {
-        self.flags.set(FLAG_BLACK_CAN_CASTLE_INDEX)
+    fn white_castle_right_disable(&mut self) {
+        self.flags.clear(FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX)
+    }
+
+    fn black_castle_any_allowed(&self) -> bool {
+        self.black_castle_left_allowed() || self.black_castle_right_allowed()
+    }
+
+    fn black_castle_any_disable(&mut self) {
+        self.black_castle_left_disable();
+        self.black_castle_right_disable();
+    }
+
+    fn black_castle_left_allowed(&self) -> bool {
+        self.flags.has(FLAG_BLACK_CAN_CASTLE_LEFT_INDEX)
+    }
+
+    fn black_castle_left_disable(&mut self) {
+        self.flags.clear(FLAG_BLACK_CAN_CASTLE_LEFT_INDEX)
+    }
+
+    fn black_castle_right_allowed(&self) -> bool {
+        self.flags.has(FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX)
+    }
+
+    fn black_castle_right_disable(&mut self) {
+        self.flags.clear(FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX)
     }
 
     fn white_castle(&self, context: &mut Context) {
-        if !self.white_castle_allowed() {
+        if !self.white_castle_any_allowed() {
             return;
         }
         let all_pieces = self.bitset();
@@ -1260,13 +1318,15 @@ impl Board {
             return;
         };
 
-        if self.white.rooks.has(WHITE_ROOK_RIGHT_STARTING_INDEX)
+        if self.white_castle_right_allowed()
+            && self.white.rooks.has(WHITE_ROOK_RIGHT_STARTING_INDEX)
             && !all_pieces.has(position_to_index(5, 7))
             && !all_pieces.has(position_to_index(6, 7)) {
             self.white_castle_right(context);
         }
 
-        if self.white.rooks.has(WHITE_ROOK_LEFT_STARTING_INDEX)
+        if self.white_castle_left_allowed()
+            && self.white.rooks.has(WHITE_ROOK_LEFT_STARTING_INDEX)
             && !all_pieces.has(position_to_index(3, 7))
             && !all_pieces.has(position_to_index(2, 7))
             && !all_pieces.has(position_to_index(1, 7)) {
@@ -1279,7 +1339,7 @@ impl Board {
         let (rook_from, rook_to) = (WHITE_ROOK_RIGHT_STARTING_INDEX, position_to_index(5, 7));
         self.white.king.mov(king_from, king_to);
         self.white.rooks.mov(rook_from, rook_to);
-        self.white_castle_disable();
+        self.white_castle_any_disable();
         Move::Normal { from: king_from, to: king_to }
     }
 
@@ -1288,12 +1348,12 @@ impl Board {
         let (rook_from, rook_to) = (WHITE_ROOK_LEFT_STARTING_INDEX, position_to_index(3, 7));
         self.white.king.mov(king_from, king_to);
         self.white.rooks.mov(rook_from, rook_to);
-        self.white_castle_disable();
+        self.white_castle_any_disable();
         Move::Normal { from: king_from, to: king_to }
     }
 
     fn white_castle_reset(&self, context: &mut Context) {
-        context.next.white_castle_enable();
+        context.next.flags = self.flags;
         context.next.white.rooks = self.white.rooks;
         context.next.white.king = self.white.king;
     }
@@ -1335,7 +1395,7 @@ impl Board {
     }
 
     fn black_castle(&self, context: &mut Context) {
-        if !self.black_castle_allowed() {
+        if !self.black_castle_any_allowed() {
             return;
         }
         let all_pieces = self.bitset();
@@ -1344,13 +1404,15 @@ impl Board {
             return;
         };
 
-        if self.black.rooks.has(BLACK_ROOK_RIGHT_STARTING_INDEX)
+        if self.black_castle_right_allowed()
+            && self.black.rooks.has(BLACK_ROOK_RIGHT_STARTING_INDEX)
             && !all_pieces.has(position_to_index(5, 0))
             && !all_pieces.has(position_to_index(6, 0)) {
             self.black_castle_right(context);
         }
 
-        if self.black.rooks.has(BLACK_ROOK_LEFT_STARTING_INDEX)
+        if self.black_castle_left_allowed()
+            && self.black.rooks.has(BLACK_ROOK_LEFT_STARTING_INDEX)
             && !all_pieces.has(position_to_index(3, 0))
             && !all_pieces.has(position_to_index(2, 0))
             && !all_pieces.has(position_to_index(1, 0)) {
@@ -1363,7 +1425,7 @@ impl Board {
         let (rook_from, rook_to) = (BLACK_ROOK_RIGHT_STARTING_INDEX, position_to_index(5, 0));
         self.black.king.mov(king_from, king_to);
         self.black.rooks.mov(rook_from, rook_to);
-        self.black_castle_disable();
+        self.black_castle_any_disable();
         Move::Normal { from: king_from, to: king_to }
     }
 
@@ -1372,12 +1434,12 @@ impl Board {
         let (rook_from, rook_to) = (BLACK_ROOK_LEFT_STARTING_INDEX, position_to_index(3, 0));
         self.black.king.mov(king_from, king_to);
         self.black.rooks.mov(rook_from, rook_to);
-        self.black_castle_disable();
+        self.black_castle_any_disable();
         Move::Normal { from: king_from, to: king_to }
     }
 
     fn black_castle_reset(&self, context: &mut Context) {
-        context.next.black_castle_enable();
+        context.next.flags = self.flags;
         context.next.black.rooks = self.black.rooks;
         context.next.black.king = self.black.king;
     }
@@ -1804,7 +1866,7 @@ impl Move {
         }
         let notation = notation.as_bytes();
         let from = Self::chess_position_to_index(&notation[..2])?;
-        let to = Self::chess_position_to_index(&notation[2..])?;
+        let to = Self::chess_position_to_index(&notation[2..4])?;
         if notation.len() == 5 {
             let symbol = char::from(notation[4]);
             let promote_to = Piece::from_symbol(symbol)?;
