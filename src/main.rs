@@ -46,7 +46,7 @@ impl UCI {
                 "uciok".to_string(),
             ],
             ["isready"] => vec!["readyok".to_string()],
-            ["ucinewgame"] => {
+            ["ucinewgame"] | ["position", "startpos"] => {
                 self.reset();
                 Vec::new()
             },
