@@ -1,6 +1,4 @@
-use std::{fmt::{self, Binary, Write}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::Error, io::{self, prelude::*}};
-
-use itertools::Itertools;
+use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::Error, io::{self, prelude::*}};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -12,18 +10,12 @@ fn main() -> Result<()> {
 }
 
 struct UCI {
-    board: Board,
-    next_move_color: Color,
-    en_passant_index: Option<u8>,
+    game: Game,
 }
 
 impl UCI {
     fn new() -> Self {
-        Self {
-            board: Board::start(),
-            next_move_color: Color::White,
-            en_passant_index: None,
-        }
+        Self { game: Game::new() }
     }
 
     fn read_eval_print_loop(&mut self) -> Result<()> {
@@ -47,7 +39,7 @@ impl UCI {
             ],
             ["isready"] => vec!["readyok".to_string()],
             ["ucinewgame"] | ["position", "startpos"] => {
-                self.reset();
+                self.game.reset();
                 Vec::new()
             },
             ["position", "startpos", "moves", raw_moves @ ..] => {
@@ -56,7 +48,7 @@ impl UCI {
                 Vec::new()
             },
             ["go", ..] => {
-                let mov = self.calculate_move()?;
+                let mov = self.game.best_move();
                 vec![format!("bestmove {}", mov.to_long_algebraic_notation()?)]
             }
             ["stop"] => vec![],
@@ -66,28 +58,13 @@ impl UCI {
         Ok(responses)
     }
 
-    fn reset(&mut self) {
-        self.board = Board::start();
-        self.next_move_color = Color::White;
-    }
-
     fn apply_moves(&mut self, raw_moves: &[&str]) -> Result<()> {
-        self.reset();
+        self.game.reset();
         for raw_move in raw_moves {
             let mov = Move::from_long_algebraic_notation(raw_move)?;
-            let (color, en_passant_index) = self.board.apply_move(mov)?;
-            self.next_move_color = color.other();
-            self.en_passant_index = en_passant_index;
+            self.game.apply_move(mov)?;
         }
         Ok(())
-    }
-
-    fn calculate_move(&mut self) -> Result<Move> {
-        let score = match self.next_move_color {
-            Color::White => self.board.white_moves(DEFAULT_REMAINDER, self.en_passant_index),
-            Color::Black => self.board.black_moves(DEFAULT_REMAINDER, self.en_passant_index),
-        };
-        Ok(score.best_move)
     }
 }
 
@@ -275,6 +252,313 @@ impl Iterator for Indices {
             self.0.clear(index);
             Some(index)
         }
+    }
+}
+
+struct Game {
+    board: Board,
+    next_move_color: Color,
+    en_passant_index: Option<u8>,
+}
+
+impl Game {
+    fn new() -> Self {
+        Self {
+            board: Board::start(),
+            next_move_color: Color::White,
+            en_passant_index: None,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.board = Board::start();
+        self.next_move_color = Color::White;
+        self.en_passant_index = None;
+    }
+
+    fn iter_white_moves(&self) -> impl Iterator<Item = Move> {
+        let mut context = Context::new(&self.board, 0);
+        Moves::iter_without_pawns_castle(&self.board.white, &self.board.black)
+            .chain(Moves::iter_white_pawns_without_en_passant(&self.board))
+            .chain(self.white_en_passant_left_move().into_iter())
+            .chain(self.white_en_passant_right_move().into_iter())
+            .chain(self.white_castle_right_move(&mut context).into_iter())
+            .chain(self.white_castle_left_move(&mut context).into_iter())
+    }
+
+    fn white_en_passant_left_move(&self) -> Option<Move> {
+        let Some(en_passant_index) = self.en_passant_index else {
+            return None;
+        };
+
+        if self.board.white.has_en_passant_left(&self.board.black, en_passant_index) {
+            Some(Move::white_en_passant_left(en_passant_index))
+        } else {
+            None
+        }
+    }
+
+    fn white_en_passant_right_move(&self) -> Option<Move> {
+        let Some(en_passant_index) = self.en_passant_index else {
+            return None;
+        };
+
+        if self.board.white.has_en_passant_right(&self.board.black, en_passant_index) {
+            Some(Move::white_en_passant_right(en_passant_index))
+        } else {
+            None
+        }
+    }
+
+    fn white_castle_right_move(&self, context: &mut Context) -> Option<Move> {
+        if self.board.white_can_castle_right(context) {
+            Some(Move::Normal {
+                from: WHITE_KING_STARTING_INDEX,
+                to: WHITE_KING_STARTING_INDEX+2
+            })
+        } else {
+            None
+        }
+    }
+
+    fn white_castle_left_move(&self, context: &mut Context) -> Option<Move> {
+        if self.board.white_can_castle_left(context) {
+            Some(Move::Normal {
+                from: WHITE_KING_STARTING_INDEX,
+                to: WHITE_KING_STARTING_INDEX-2
+            })
+        } else {
+            None
+        }
+    }
+
+    fn iter_black_moves(&self) -> impl Iterator<Item = Move> {
+        let mut context = Context::new(&self.board, 0);
+        Moves::iter_without_pawns_castle(&self.board.black, &self.board.white)
+            .chain(Moves::iter_black_pawns_without_en_passant(&self.board))
+            .chain(self.black_en_passant_left_move().into_iter())
+            .chain(self.black_en_passant_right_move().into_iter())
+            .chain(self.black_castle_right_move(&mut context).into_iter())
+            .chain(self.black_castle_left_move(&mut context).into_iter())
+    }
+
+    fn black_en_passant_left_move(&self) -> Option<Move> {
+        let Some(en_passant_index) = self.en_passant_index else {
+            return None;
+        };
+
+        if self.board.black.has_en_passant_left(&self.board.white, en_passant_index) {
+            Some(Move::black_en_passant_left(en_passant_index))
+        } else {
+            None
+        }
+    }
+
+    fn black_en_passant_right_move(&self) -> Option<Move> {
+        let Some(en_passant_index) = self.en_passant_index else {
+            return None;
+        };
+
+        if self.board.black.has_en_passant_right(&self.board.white, en_passant_index) {
+            Some(Move::black_en_passant_right(en_passant_index))
+        } else {
+            None
+        }
+    }
+
+    fn black_castle_right_move(&self, context: &mut Context) -> Option<Move> {
+        if self.board.black_can_castle_right(context) {
+            Some(Move::Normal {
+                from: BLACK_KING_STARTING_INDEX,
+                to: BLACK_KING_STARTING_INDEX+2
+            })
+        } else {
+            None
+        }
+    }
+
+    fn black_castle_left_move(&self, context: &mut Context) -> Option<Move> {
+        if self.board.black_can_castle_left(context) {
+            Some(Move::Normal {
+                from: BLACK_KING_STARTING_INDEX,
+                to: BLACK_KING_STARTING_INDEX-2
+            })
+        } else {
+            None
+        }
+    }
+
+    fn apply_move(&mut self, mov: Move) -> Result<()> {
+        let is_legal = match self.next_move_color {
+            Color::White => self.iter_white_moves().any(|legal_move| legal_move == mov),
+            Color::Black => self.iter_black_moves().any(|legal_move| legal_move == mov),
+        };
+        if is_legal {
+            self.apply_move_unchecked(mov);
+            Ok(())
+        } else {
+            Err(format!("illegal move {mov}").into())
+        }
+    }
+
+    fn apply_move_unchecked(&mut self, mov: Move) {
+        match mov {
+            Move::None => unreachable!(),
+            Move::Normal { from, to } => {
+                let en_passant_index = self.apply_move_normal(from, to);
+                self.en_passant_index = en_passant_index;
+            }
+            Move::Promotion { piece, from, to } => self.apply_move_promotion(piece, from, to),
+        };
+        self.next_move_color = self.next_move_color.other();
+    }
+
+    fn apply_move_normal(&mut self, from: u8, to: u8) -> Option<u8> {
+        match self.next_move_color {
+            Color::White => {
+                assert!(self.board.white.bitset().has(from));
+                if self.white_apply_move_en_passant(from, to) {
+                    None
+                } else if self.white_apply_move_castle(from, to) {
+                    None
+                } else {
+                    let en_passant_index = self.board.white.normal_move(&mut self.board.black, from, to);
+                    self.white_disable_castle(from, to);
+                    en_passant_index
+                }
+            },
+            Color::Black => {
+                assert!(self.board.black.bitset().has(from));
+                if self.black_apply_move_en_passant(from, to) {
+                    None
+                } else if self.black_apply_move_castle(from, to) {
+                    None
+                } else {
+                    let en_passant_index = self.board.black.normal_move(&mut self.board.white, from, to);
+                    self.black_disable_castle(from, to);
+                    en_passant_index
+                }
+            }
+        }
+    }
+
+    fn white_apply_move_en_passant(&mut self, from: u8, to: u8) -> bool {
+        let Some(en_passant_index) = self.en_passant_index else {
+            return false;
+        };
+        let mov = Move::Normal { from, to };
+        let is_en_passant = if mov == Move::white_en_passant_left(en_passant_index) {
+            assert!(self.board.white.has_en_passant_left(&self.board.black, en_passant_index));
+            true
+        } else if mov == Move::white_en_passant_right(en_passant_index) {
+            assert!(self.board.white.has_en_passant_right(&self.board.black, en_passant_index));
+            true
+        } else {
+            false
+        };
+        if !is_en_passant {
+            return false;
+        }
+        self.board.white.pawns.mov(from, to);
+        self.board.black.pawns.checked_clear(to);
+        true
+    }
+
+    fn black_apply_move_en_passant(&mut self, from: u8, to: u8) -> bool {
+        let Some(en_passant_index) = self.en_passant_index else {
+            return false;
+        };
+        let mov = Move::Normal { from, to };
+        let is_en_passant = if mov == Move::black_en_passant_left(en_passant_index) {
+            assert!(self.board.black.has_en_passant_left(&self.board.white, en_passant_index));
+            true
+        } else if mov == Move::black_en_passant_right(en_passant_index) {
+            assert!(self.board.black.has_en_passant_right(&self.board.white, en_passant_index));
+            true
+        } else {
+            false
+        };
+        if !is_en_passant {
+            return false;
+        }
+        self.board.black.pawns.mov(from, to);
+        self.board.white.pawns.checked_clear(to);
+        true
+    }
+
+    fn white_disable_castle(&mut self, from: u8, to: u8) {
+        if from == WHITE_KING_STARTING_INDEX || to == WHITE_KING_STARTING_INDEX {
+            self.board.white_castle_any_disable();
+        } else if from == WHITE_ROOK_LEFT_STARTING_INDEX || to == WHITE_ROOK_LEFT_STARTING_INDEX {
+            self.board.white_castle_left_disable();
+        } else if from == WHITE_ROOK_RIGHT_STARTING_INDEX || to == WHITE_ROOK_RIGHT_STARTING_INDEX {
+            self.board.white_castle_right_disable();
+        }
+    }
+
+    fn black_disable_castle(&mut self, from: u8, to: u8) {
+        if from == BLACK_KING_STARTING_INDEX || to == BLACK_KING_STARTING_INDEX {
+            self.board.black_castle_any_disable();
+        } else if from == BLACK_ROOK_LEFT_STARTING_INDEX || to == BLACK_ROOK_LEFT_STARTING_INDEX {
+            self.board.black_castle_left_disable();
+        } else if from == BLACK_ROOK_RIGHT_STARTING_INDEX || to == BLACK_ROOK_RIGHT_STARTING_INDEX {
+            self.board.black_castle_right_disable();
+        }
+    }
+
+    fn white_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
+        if from != WHITE_KING_STARTING_INDEX || !self.board.white_castle_any_allowed() {
+            return false;
+        }
+        if to == from-2 {
+            assert!(self.board.white_castle_left_allowed());
+            self.board.white_castle_left_apply();
+            true
+        } else if to == from+2 {
+            assert!(self.board.white_castle_right_allowed());
+            self.board.white_castle_right_apply();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn black_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
+        if from != BLACK_KING_STARTING_INDEX || !self.board.black_castle_any_allowed() {
+            return false;
+        }
+        if to == from-2 {
+            assert!(self.board.black_castle_left_allowed());
+            self.board.black_castle_left_apply();
+            true
+        } else if to == from+2 {
+            assert!(self.board.black_castle_right_allowed());
+            self.board.black_castle_right_apply();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn apply_move_promotion(&mut self, piece: Piece, from: u8, to: u8) {
+        match self.next_move_color {
+            Color::White => {
+                assert!(self.board.white.pawns.has(from));
+                self.board.white.promotion_move(&mut self.board.black, piece, from, to);
+            },
+            Color::Black => {
+                assert!(self.board.black.pawns.has(from));
+                self.board.black.promotion_move(&mut self.board.white, piece, from, to);
+            }
+        }
+    }
+
+    fn best_move(&mut self) -> Move {
+        let score = match self.next_move_color {
+            Color::White => self.board.white_moves(DEFAULT_REMAINDER, self.en_passant_index),
+            Color::Black => self.board.black_moves(DEFAULT_REMAINDER, self.en_passant_index),
+        };
+        score.best_move
     }
 }
 
@@ -1022,239 +1306,6 @@ impl Board {
         };
         board.debug_check();
         board
-    }
-
-    fn iter_white_moves(&self, context: &mut Context, en_passant_index: Option<u8>) -> impl Iterator<Item = Move> {
-        Moves::iter_without_pawns_castle(&self.white, &self.black)
-            .chain(Moves::iter_white_pawns_without_en_passant(self))
-            .chain(self.white_en_passant_left_move(en_passant_index).into_iter())
-            .chain(self.white_en_passant_right_move(en_passant_index).into_iter())
-            .chain(self.white_castle_right_move(context).into_iter())
-            .chain(self.white_castle_left_move(context).into_iter())
-    }
-
-    fn white_en_passant_left_move(&self, en_passant_index: Option<u8>) -> Option<Move> {
-        let Some(en_passant_index) = en_passant_index else {
-            return None;
-        };
-        let (x, y) = index_to_position(en_passant_index);
-
-        if self.white.has_en_passant_left(&self.black, en_passant_index) {
-            Some(Move::Normal {
-                from: position_to_index(x-1, y),
-                to: position_to_index(x, y-1),
-            })
-        } else {
-            None
-        }
-    }
-
-    fn white_en_passant_right_move(&self, en_passant_index: Option<u8>) -> Option<Move> {
-        let Some(en_passant_index) = en_passant_index else {
-            return None;
-        };
-        let (x, y) = index_to_position(en_passant_index);
-
-        if self.white.has_en_passant_right(&self.black, en_passant_index) {
-            Some(Move::Normal {
-                from: position_to_index(x+1, y),
-                to: position_to_index(x, y-1),
-            })
-        } else {
-            None
-        }
-    }
-
-    fn white_castle_right_move(&self, context: &mut Context) -> Option<Move> {
-        if self.white_can_castle_right(context) {
-            Some(Move::Normal {
-                from: WHITE_KING_STARTING_INDEX,
-                to: WHITE_KING_STARTING_INDEX+2
-            })
-        } else {
-            None
-        }
-    }
-
-    fn white_castle_left_move(&self, context: &mut Context) -> Option<Move> {
-        if self.white_can_castle_left(context) {
-            Some(Move::Normal {
-                from: WHITE_KING_STARTING_INDEX,
-                to: WHITE_KING_STARTING_INDEX-2
-            })
-        } else {
-            None
-        }
-    }
-
-    fn iter_black_moves(&self, context: &mut Context, en_passant_index: Option<u8>) -> impl Iterator<Item = Move> {
-        Moves::iter_without_pawns_castle(&self.black, &self.white)
-            .chain(Moves::iter_black_pawns_without_en_passant(self))
-            .chain(self.black_en_passant_left_move(en_passant_index).into_iter())
-            .chain(self.black_en_passant_right_move(en_passant_index).into_iter())
-            .chain(self.black_castle_right_move(context).into_iter())
-            .chain(self.black_castle_left_move(context).into_iter())
-    }
-
-    fn black_en_passant_left_move(&self, en_passant_index: Option<u8>) -> Option<Move> {
-        let Some(en_passant_index) = en_passant_index else {
-            return None;
-        };
-        let (x, y) = index_to_position(en_passant_index);
-
-        if self.black.has_en_passant_left(&self.white, en_passant_index) {
-            Some(Move::Normal {
-                from: position_to_index(x-1, y),
-                to: position_to_index(x, y+1),
-            })
-        } else {
-            None
-        }
-    }
-
-    fn black_en_passant_right_move(&self, en_passant_index: Option<u8>) -> Option<Move> {
-        let Some(en_passant_index) = en_passant_index else {
-            return None;
-        };
-        let (x, y) = index_to_position(en_passant_index);
-
-        if self.black.has_en_passant_right(&self.white, en_passant_index) {
-            Some(Move::Normal {
-                from: position_to_index(x+1, y),
-                to: position_to_index(x, y+1),
-            })
-        } else {
-            None
-        }
-    }
-
-    fn black_castle_right_move(&self, context: &mut Context) -> Option<Move> {
-        if self.black_can_castle_right(context) {
-            Some(Move::Normal {
-                from: BLACK_KING_STARTING_INDEX,
-                to: BLACK_KING_STARTING_INDEX+2
-            })
-        } else {
-            None
-        }
-    }
-
-    fn black_castle_left_move(&self, context: &mut Context) -> Option<Move> {
-        if self.black_can_castle_left(context) {
-            Some(Move::Normal {
-                from: BLACK_KING_STARTING_INDEX,
-                to: BLACK_KING_STARTING_INDEX-2
-            })
-        } else {
-            None
-        }
-    }
-
-    fn apply_move(&mut self, mov: Move) -> Result<(Color, Option<u8>)> {
-        // TODO: check move is legal
-        match mov {
-            Move::None => Err("cannot apply none move".into()),
-            Move::Normal { from, to } => self.apply_move_normal(from, to),
-            Move::Promotion { piece, from, to } => self.apply_move_promotion(piece, from, to),
-        }
-    }
-
-    fn apply_move_normal(&mut self, from: u8, to: u8) -> Result<(Color, Option<u8>)> {
-        // TODO: support executing en passant
-
-        if self.white.bitset().has(from) {
-            let en_passant_index = if self.white_apply_move_castle(from, to) {
-                None
-            } else {
-                let en_passant_index = self.white.normal_move(&mut self.black, from, to);
-                self.white_disable_castle(from, to);
-                en_passant_index
-            };
-            Ok((Color::White, en_passant_index))
-        } else if self.black.bitset().has(from) {
-            let en_passant_index = if self.black_apply_move_castle(from, to) {
-                None
-            } else {
-                let en_passant_index = self.black.normal_move(&mut self.white, from, to);
-                self.black_disable_castle(from, to);
-                en_passant_index
-            };
-            Ok((Color::Black, en_passant_index))
-        } else {
-            Err(format!(
-                "illegal move {}: from square empty",
-                Move::long_algebraic_notation_normal(from, to),
-            ).into())
-        }
-    }
-
-    fn white_disable_castle(&mut self, from: u8, to: u8) {
-        if from == WHITE_KING_STARTING_INDEX || to == WHITE_KING_STARTING_INDEX {
-            self.white_castle_any_disable();
-        } else if from == WHITE_ROOK_LEFT_STARTING_INDEX || to == WHITE_ROOK_LEFT_STARTING_INDEX {
-            self.white_castle_left_disable();
-        } else if from == WHITE_ROOK_RIGHT_STARTING_INDEX || to == WHITE_ROOK_RIGHT_STARTING_INDEX {
-            self.white_castle_right_disable();
-        }
-    }
-
-    fn black_disable_castle(&mut self, from: u8, to: u8) {
-        if from == BLACK_KING_STARTING_INDEX || to == BLACK_KING_STARTING_INDEX {
-            self.black_castle_any_disable();
-        } else if from == BLACK_ROOK_LEFT_STARTING_INDEX || to == BLACK_ROOK_LEFT_STARTING_INDEX {
-            self.black_castle_left_disable();
-        } else if from == BLACK_ROOK_RIGHT_STARTING_INDEX || to == BLACK_ROOK_RIGHT_STARTING_INDEX {
-            self.black_castle_right_disable();
-        }
-    }
-
-    fn white_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
-        if from != WHITE_KING_STARTING_INDEX || !self.white_castle_any_allowed() {
-            return false;
-        }
-        if to == from-2 {
-            assert!(self.white_castle_left_allowed());
-            self.white_castle_left_apply();
-            true
-        } else if to == from+2 {
-            assert!(self.white_castle_right_allowed());
-            self.white_castle_right_apply();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn black_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
-        if from != BLACK_KING_STARTING_INDEX || !self.black_castle_any_allowed() {
-            return false;
-        }
-        if to == from-2 {
-            assert!(self.black_castle_left_allowed());
-            self.black_castle_left_apply();
-            true
-        } else if to == from+2 {
-            assert!(self.black_castle_right_allowed());
-            self.black_castle_right_apply();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn apply_move_promotion(&mut self, piece: Piece, from: u8, to: u8) -> Result<(Color, Option<u8>)> {
-        if self.white.pawns.has(from) {
-            self.white.promotion_move(&mut self.black, piece, from, to);
-            Ok((Color::White, None))
-        } else if self.black.pawns.has(from) {
-            self.black.promotion_move(&mut self.white, piece, from, to);
-            Ok((Color::Black, None))
-        } else {
-            Err(format!(
-                "illegal move {}: from square is not a pawn",
-                Move::long_algebraic_notation_normal(from, to),
-            ).into())
-        }
     }
 
     fn bitset(&self) -> Bitset {
@@ -2082,7 +2133,48 @@ enum Move {
     Promotion { piece: Piece, from: u8, to: u8 },
 }
 
+impl fmt::Display for Move {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.to_long_algebraic_notation() {
+            Ok(s) => write!(f, "{s}"),
+            Err(_) => write!(f, "None")
+        }
+    }
+}
+
 impl Move {
+    fn white_en_passant_left(en_passant_index: u8) -> Self {
+        let (x, y) = index_to_position(en_passant_index);
+        Self::Normal {
+            from: position_to_index(x-1, y),
+            to: position_to_index(x, y-1),
+        }
+    }
+
+    fn white_en_passant_right(en_passant_index: u8) -> Self {
+        let (x, y) = index_to_position(en_passant_index);
+        Self::Normal {
+            from: position_to_index(x+1, y),
+            to: position_to_index(x, y-1),
+        }
+    }
+
+    fn black_en_passant_left(en_passant_index: u8) -> Self {
+        let (x, y) = index_to_position(en_passant_index);
+        Self::Normal {
+            from: position_to_index(x-1, y),
+            to: position_to_index(x, y+1),
+        }
+    }
+
+    fn black_en_passant_right(en_passant_index: u8) -> Self {
+        let (x, y) = index_to_position(en_passant_index);
+        Self::Normal {
+            from: position_to_index(x+1, y),
+            to: position_to_index(x, y+1),
+        }
+    }
+
     fn from_long_algebraic_notation(notation: &str) -> Result<Self> {
         if notation.len() != 4 && notation.len() != 5 {
             return Err(format!("expected chess notation, got '{}'", notation).into());
@@ -2140,6 +2232,7 @@ impl Move {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Color {
     White,
     Black,
@@ -2284,20 +2377,16 @@ mod tests {
     fn test_iter_moves_start(){
         unsafe { init() };
 
-        let board = Board::start();
-        let mut context = Context::new(&board, 0);
-        let context_next_old = context.next.clone();
+        let game = Game::new();
 
-        let white_moves: Vec<_> = board.iter_white_moves(&mut context, None).collect();
-        assert_eq!(context.next, context_next_old);
+        let white_moves: Vec<_> = game.iter_white_moves().collect();
         assert_eq!(
             white_moves.iter().copied().collect::<HashSet<_>>().len(),
             white_moves.len(),
         );
         assert_eq!(white_moves.len(), 20);
 
-        let black_moves: Vec<_> = board.iter_black_moves(&mut context, None).collect();
-        assert_eq!(context.next, context_next_old);
+        let black_moves: Vec<_> = game.iter_black_moves().collect();
         assert_eq!(
             black_moves.iter().copied().collect::<HashSet<_>>().len(),
             black_moves.len(),
