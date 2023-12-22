@@ -1,8 +1,8 @@
-use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::Error, io::{self, prelude::*}};
+use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::{Error, self}, io::{self, prelude::*}, cmp::Ordering};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const DEFAULT_REMAINDER: usize = 5;
+const DEFAULT_REMAINDER: usize = 4;
 
 fn main() -> Result<()> {
     unsafe { init() };
@@ -48,7 +48,7 @@ impl UCI {
                 Vec::new()
             },
             ["go", ..] => {
-                let mov = self.game.best_move();
+                let mov = self.game.best_move()?;
                 vec![format!("bestmove {}", mov.to_long_algebraic_notation()?)]
             }
             ["stop"] => vec![],
@@ -255,6 +255,21 @@ impl Iterator for Indices {
     }
 }
 
+#[derive(Debug)]
+enum EndOfGameError {
+    Checkmate,
+    Stalemate,
+}
+
+impl fmt::Display for EndOfGameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl error::Error for EndOfGameError {}
+
+#[derive(Clone)]
 struct Game {
     board: Board,
     next_move_color: Color,
@@ -270,13 +285,32 @@ impl Game {
         }
     }
 
+    fn with_move_unchecked(&self, mov: Move) -> Self {
+        let mut new_game = self.clone();
+        new_game.apply_move_unchecked(mov);
+        new_game
+    }
+
     fn reset(&mut self) {
         self.board = Board::start();
         self.next_move_color = Color::White;
         self.en_passant_index = None;
     }
 
-    fn iter_white_moves(&self) -> impl Iterator<Item = Move> {
+    fn has_check(&self) -> bool {
+        match self.next_move_color {
+            Color::White => self.board.black.has_check(&self.board.white, Color::Black),
+            Color::Black => self.board.black.has_check(&self.board.black, Color::White),
+        }
+    }
+
+    fn iter_white_games_moves(&self) -> impl Iterator<Item = (Move, Game)> + '_ {
+        self.iter_white_moves_with_checks()
+            .map(|mov| (mov, self.with_move_unchecked(mov)))
+            .filter(|(_, game)| !game.board.black.has_check(&game.board.white, Color::Black))
+    }
+
+    fn iter_white_moves_with_checks(&self) -> impl Iterator<Item = Move> {
         let mut context = Context::new(&self.board, 0);
         Moves::iter_without_pawns_castle(&self.board.white, &self.board.black)
             .chain(Moves::iter_white_pawns_without_en_passant(&self.board))
@@ -292,7 +326,7 @@ impl Game {
         };
 
         if self.board.white.has_en_passant_left(&self.board.black, en_passant_index) {
-            Some(Move::white_en_passant_left(en_passant_index))
+            Move::white_en_passant_left(en_passant_index)
         } else {
             None
         }
@@ -304,7 +338,7 @@ impl Game {
         };
 
         if self.board.white.has_en_passant_right(&self.board.black, en_passant_index) {
-            Some(Move::white_en_passant_right(en_passant_index))
+            Move::white_en_passant_right(en_passant_index)
         } else {
             None
         }
@@ -332,7 +366,13 @@ impl Game {
         }
     }
 
-    fn iter_black_moves(&self) -> impl Iterator<Item = Move> {
+    fn iter_black_games_moves(&self) -> impl Iterator<Item = (Move, Game)> + '_ {
+        self.iter_black_moves_with_checks()
+            .map(|mov| (mov, self.with_move_unchecked(mov)))
+            .filter(|(_, game)| !game.board.white.has_check(&game.board.black, Color::White))
+    }
+
+    fn iter_black_moves_with_checks(&self) -> impl Iterator<Item = Move> {
         let mut context = Context::new(&self.board, 0);
         Moves::iter_without_pawns_castle(&self.board.black, &self.board.white)
             .chain(Moves::iter_black_pawns_without_en_passant(&self.board))
@@ -348,7 +388,7 @@ impl Game {
         };
 
         if self.board.black.has_en_passant_left(&self.board.white, en_passant_index) {
-            Some(Move::black_en_passant_left(en_passant_index))
+            Move::black_en_passant_left(en_passant_index)
         } else {
             None
         }
@@ -360,7 +400,7 @@ impl Game {
         };
 
         if self.board.black.has_en_passant_right(&self.board.white, en_passant_index) {
-            Some(Move::black_en_passant_right(en_passant_index))
+            Move::black_en_passant_right(en_passant_index)
         } else {
             None
         }
@@ -390,8 +430,8 @@ impl Game {
 
     fn apply_move(&mut self, mov: Move) -> Result<()> {
         let is_legal = match self.next_move_color {
-            Color::White => self.iter_white_moves().any(|legal_move| legal_move == mov),
-            Color::Black => self.iter_black_moves().any(|legal_move| legal_move == mov),
+            Color::White => self.iter_white_games_moves().any(|(legal_move, _)| legal_move == mov),
+            Color::Black => self.iter_black_games_moves().any(|(legal_move, _)| legal_move == mov),
         };
         if is_legal {
             self.apply_move_unchecked(mov);
@@ -447,10 +487,10 @@ impl Game {
             return false;
         };
         let mov = Move::Normal { from, to };
-        let is_en_passant = if mov == Move::white_en_passant_left(en_passant_index) {
+        let is_en_passant = if Some(mov) == Move::white_en_passant_left(en_passant_index) {
             assert!(self.board.white.has_en_passant_left(&self.board.black, en_passant_index));
             true
-        } else if mov == Move::white_en_passant_right(en_passant_index) {
+        } else if Some(mov) == Move::white_en_passant_right(en_passant_index) {
             assert!(self.board.white.has_en_passant_right(&self.board.black, en_passant_index));
             true
         } else {
@@ -469,10 +509,10 @@ impl Game {
             return false;
         };
         let mov = Move::Normal { from, to };
-        let is_en_passant = if mov == Move::black_en_passant_left(en_passant_index) {
+        let is_en_passant = if Some(mov) == Move::black_en_passant_left(en_passant_index) {
             assert!(self.board.black.has_en_passant_left(&self.board.white, en_passant_index));
             true
-        } else if mov == Move::black_en_passant_right(en_passant_index) {
+        } else if Some(mov) == Move::black_en_passant_right(en_passant_index) {
             assert!(self.board.black.has_en_passant_right(&self.board.white, en_passant_index));
             true
         } else {
@@ -553,12 +593,26 @@ impl Game {
         }
     }
 
-    fn best_move(&mut self) -> Move {
-        let score = match self.next_move_color {
-            Color::White => self.board.white_moves(DEFAULT_REMAINDER, self.en_passant_index),
-            Color::Black => self.board.black_moves(DEFAULT_REMAINDER, self.en_passant_index),
+    fn best_move(&self) -> Result<Move> {
+        let result = match self.next_move_color {
+            Color::White => self.iter_white_games_moves()
+                .map(|(mov, game)| (mov, game.board.black_moves(DEFAULT_REMAINDER, game.en_passant_index)))
+                .max_by(|(_, a), (_, b)| a.cmp_white(&b)),
+            Color::Black => self.iter_black_games_moves()
+                .map(|(mov, game)| (mov, game.board.white_moves(DEFAULT_REMAINDER, game.en_passant_index)))
+                .max_by(|(_, a), (_, b)| a.cmp_black(&b)),
         };
-        score.best_move
+
+        match result {
+            Some((mov, _)) => Ok(mov),
+            None => {
+                if self.has_check() {
+                    Err(EndOfGameError::Checkmate.into())
+                } else {
+                    Err(EndOfGameError::Stalemate.into())
+                }
+            },
+        }
     }
 }
 
@@ -2074,7 +2128,7 @@ impl Board {
             );
         }
 
-        if self.black.has_en_passant_left(&self.white, en_passant_index) {
+        if self.black.has_en_passant_right(&self.white, en_passant_index) {
             self.black_pawn_capture(
                 context,
                 en_passant_index,
@@ -2126,7 +2180,7 @@ impl Piece {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Move {
     None,
     Normal { from: u8, to: u8 },
@@ -2142,36 +2196,58 @@ impl fmt::Display for Move {
     }
 }
 
+impl fmt::Debug for Move {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self, f)
+    }
+}
+
 impl Move {
-    fn white_en_passant_left(en_passant_index: u8) -> Self {
+    fn white_en_passant_left(en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
-        Self::Normal {
-            from: position_to_index(x-1, y),
-            to: position_to_index(x, y-1),
+        if x == 0 {
+            None
+        } else {
+            Some(Self::Normal {
+                from: position_to_index(x-1, y),
+                to: position_to_index(x, y-1),
+            })
         }
     }
 
-    fn white_en_passant_right(en_passant_index: u8) -> Self {
+    fn white_en_passant_right(en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
-        Self::Normal {
-            from: position_to_index(x+1, y),
-            to: position_to_index(x, y-1),
+        if x == 7 {
+            None
+        } else {
+            Some(Self::Normal {
+                from: position_to_index(x+1, y),
+                to: position_to_index(x, y-1),
+            })
         }
     }
 
-    fn black_en_passant_left(en_passant_index: u8) -> Self {
+    fn black_en_passant_left(en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
-        Self::Normal {
-            from: position_to_index(x-1, y),
-            to: position_to_index(x, y+1),
+        if x == 0 {
+            None
+        } else {
+            Some(Self::Normal {
+                from: position_to_index(x-1, y),
+                to: position_to_index(x, y+1),
+            })
         }
     }
 
-    fn black_en_passant_right(en_passant_index: u8) -> Self {
+    fn black_en_passant_right(en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
-        Self::Normal {
-            from: position_to_index(x+1, y),
-            to: position_to_index(x, y+1),
+        if x == 7 {
+            None
+        } else {
+            Some(Self::Normal {
+                from: position_to_index(x+1, y),
+                to: position_to_index(x, y+1),
+            })
         }
     }
 
@@ -2210,6 +2286,12 @@ impl Move {
     fn index_to_chess_position(index: u8) -> (char, char) {
         let (x, y) = index_to_position(index);
         ((b'a' + x).into(), char::from_digit((8-y).into(), 10).unwrap())
+    }
+
+    #[allow(dead_code)]
+    fn fmt_index(index: u8) -> String {
+        let (x, y) = Self::index_to_chess_position(index);
+        format!("{x}{y}")
     }
 
     fn chess_position_to_index(raw_position: &[u8]) -> Result<u8> {
@@ -2297,6 +2379,14 @@ impl Score {
         }
     }
 
+    fn cmp_black(&self, rhs: &Self) -> Ordering {
+        self.best_points.total_cmp(&rhs.best_points)
+    }
+
+    fn cmp_white(&self, rhs: &Self) -> Ordering {
+        rhs.best_points.total_cmp(&self.best_points)
+    }
+
     fn update_white(&mut self, other: Score, mov: Move) {
         if self.best_move == Move::None || other.best_points < self.best_points {
             self.best_points = other.best_points;
@@ -2374,19 +2464,23 @@ mod tests {
     }
 
     #[test]
-    fn test_iter_moves_start(){
+    fn test_iter_moves_start() {
         unsafe { init() };
 
-        let game = Game::new();
-
-        let white_moves: Vec<_> = game.iter_white_moves().collect();
+        let mut game = Game::new();
+        let white_moves: Vec<_> = game.iter_white_games_moves()
+            .map(|(mov, _)| mov)
+            .collect();
         assert_eq!(
             white_moves.iter().copied().collect::<HashSet<_>>().len(),
             white_moves.len(),
         );
         assert_eq!(white_moves.len(), 20);
 
-        let black_moves: Vec<_> = game.iter_black_moves().collect();
+        game.next_move_color = game.next_move_color.other();
+        let black_moves: Vec<_> = game.iter_black_games_moves()
+            .map(|(mov, _)| mov)
+            .collect();
         assert_eq!(
             black_moves.iter().copied().collect::<HashSet<_>>().len(),
             black_moves.len(),
