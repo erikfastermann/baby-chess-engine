@@ -1,4 +1,4 @@
-use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::{Error, self}, io::{self, prelude::*}, cmp::Ordering};
+use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, error::{Error, self}, io::{self, prelude::*}, cmp::Ordering, collections::HashMap};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -79,7 +79,7 @@ fn position_to_index(x: u8, y: u8) -> u8 {
     8*y + x
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Bitset(u64);
 
 impl Binary for Bitset {
@@ -258,7 +258,7 @@ impl Iterator for Indices {
 #[derive(Debug)]
 enum EndOfGameError {
     Checkmate,
-    Stalemate,
+    Other,
 }
 
 impl fmt::Display for EndOfGameError {
@@ -269,32 +269,56 @@ impl fmt::Display for EndOfGameError {
 
 impl error::Error for EndOfGameError {}
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct FullPosition {
+    board: Board,
+    en_passant_index: Option<u8>,
+}
+
+impl FullPosition {
+    fn from_game(game: &Game) -> Self {
+        Self {
+            board: game.board.clone(),
+            en_passant_index: game.en_passant_index,
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Game {
     board: Board,
     next_move_color: Color,
     en_passant_index: Option<u8>,
+    full_position_counts: HashMap<FullPosition, usize>,
 }
 
+// TODO:
+// Currently we disallow repeating moves entirely.
+// When we are losing it might be nice to repeat moves to get a draw.
 impl Game {
     fn new() -> Self {
-        Self {
+        let mut game = Self {
             board: Board::start(),
             next_move_color: Color::White,
             en_passant_index: None,
-        }
+            full_position_counts: HashMap::new(),
+        };
+        game.full_position_counts.insert(FullPosition::from_game(&game), 1);
+        game
     }
 
-    fn with_move_unchecked(&self, mov: Move) -> Self {
+    fn with_move_unchecked(&self, mov: Move) -> (Self, bool) {
+        // TODO: Don't copy the position counts HashMap every time
         let mut new_game = self.clone();
-        new_game.apply_move_unchecked(mov);
-        new_game
+        let repeats = new_game.apply_move_unchecked(mov);
+        (new_game, repeats)
     }
 
     fn reset(&mut self) {
         self.board = Board::start();
         self.next_move_color = Color::White;
         self.en_passant_index = None;
+        self.full_position_counts.clear();
     }
 
     fn has_check(&self) -> bool {
@@ -307,6 +331,8 @@ impl Game {
     fn iter_white_games_moves(&self) -> impl Iterator<Item = (Move, Game)> + '_ {
         self.iter_white_moves_with_checks()
             .map(|mov| (mov, self.with_move_unchecked(mov)))
+            .filter(|(_, (_, repeats))| !repeats)
+            .map(|(mov, (game, _))| (mov, game))
             .filter(|(_, game)| !game.board.black.has_check(&game.board.white, Color::Black))
     }
 
@@ -369,6 +395,8 @@ impl Game {
     fn iter_black_games_moves(&self) -> impl Iterator<Item = (Move, Game)> + '_ {
         self.iter_black_moves_with_checks()
             .map(|mov| (mov, self.with_move_unchecked(mov)))
+            .filter(|(_, (_, repeats))| !repeats)
+            .map(|(mov, (game, _))| (mov, game))
             .filter(|(_, game)| !game.board.white.has_check(&game.board.black, Color::White))
     }
 
@@ -434,14 +462,14 @@ impl Game {
             Color::Black => self.iter_black_games_moves().any(|(legal_move, _)| legal_move == mov),
         };
         if is_legal {
-            self.apply_move_unchecked(mov);
+            let _ = self.apply_move_unchecked(mov);
             Ok(())
         } else {
             Err(format!("illegal move {mov}").into())
         }
     }
 
-    fn apply_move_unchecked(&mut self, mov: Move) {
+    fn apply_move_unchecked(&mut self, mov: Move) -> bool {
         match mov {
             Move::None => unreachable!(),
             Move::Normal { from, to } => {
@@ -451,6 +479,12 @@ impl Game {
             Move::Promotion { piece, from, to } => self.apply_move_promotion(piece, from, to),
         };
         self.next_move_color = self.next_move_color.other();
+
+        let count = self.full_position_counts
+            .entry(FullPosition::from_game(self))
+            .or_insert(0);
+        *count += 1;
+        *count >= 3
     }
 
     fn apply_move_normal(&mut self, from: u8, to: u8) -> Option<u8> {
@@ -486,6 +520,9 @@ impl Game {
         let Some(en_passant_index) = self.en_passant_index else {
             return false;
         };
+        if !self.board.white.pawns.has(from) {
+            return false;
+        }
         let mov = Move::Normal { from, to };
         let is_en_passant = if Some(mov) == Move::white_en_passant_left(en_passant_index) {
             assert!(self.board.white.has_en_passant_left(&self.board.black, en_passant_index));
@@ -500,7 +537,7 @@ impl Game {
             return false;
         }
         self.board.white.pawns.mov(from, to);
-        self.board.black.pawns.checked_clear(to);
+        self.board.black.pawns.checked_clear(en_passant_index);
         true
     }
 
@@ -508,6 +545,9 @@ impl Game {
         let Some(en_passant_index) = self.en_passant_index else {
             return false;
         };
+        if !self.board.black.pawns.has(from) {
+            return false;
+        }
         let mov = Move::Normal { from, to };
         let is_en_passant = if Some(mov) == Move::black_en_passant_left(en_passant_index) {
             assert!(self.board.black.has_en_passant_left(&self.board.white, en_passant_index));
@@ -522,7 +562,7 @@ impl Game {
             return false;
         }
         self.board.black.pawns.mov(from, to);
-        self.board.white.pawns.checked_clear(to);
+        self.board.white.pawns.checked_clear(en_passant_index);
         true
     }
 
@@ -609,14 +649,14 @@ impl Game {
                 if self.has_check() {
                     Err(EndOfGameError::Checkmate.into())
                 } else {
-                    Err(EndOfGameError::Stalemate.into())
+                    Err(EndOfGameError::Other.into())
                 }
             },
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct PlayerBoard {
     pawns: Bitset,
     bishops: Bitset,
@@ -711,14 +751,12 @@ impl PlayerBoard {
         self.remove_piece(piece, from);
         enemy.captured(to);
         self.place_piece(piece, to);
-        self.possible_en_passant(Move::Normal { from, to })
+
+        Self::possible_en_passant(piece, from, to)
     }
 
-    fn possible_en_passant(&self, mov: Move) -> Option<u8> {
-        let Move::Normal { from, to } = mov else {
-            return None;
-        };
-        if !self.pawns.has(from) {
+    fn possible_en_passant(piece: Piece, from: u8, to: u8) -> Option<u8> {
+        if piece != Piece::Pawn {
             return None;
         }
         let (from_x, from_y) = index_to_position(from);
@@ -1242,7 +1280,7 @@ const FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX: u8 = 1;
 const FLAG_BLACK_CAN_CASTLE_LEFT_INDEX: u8 = 2;
 const FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX: u8 = 3;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct Board {
     black: PlayerBoard,
     white: PlayerBoard,
@@ -2488,5 +2526,24 @@ mod tests {
         assert_eq!(black_moves.len(), 20);
 
         assert_ne!(white_moves, black_moves);
+    }
+
+    #[test]
+    fn test_white_en_passant() {
+        unsafe { init() };
+
+        let mut game = Game::new();
+        let raw_moves = [
+            "e2e4",
+            "b8a6",
+            "e4e5",
+            "d7d5",
+            "e5d6",
+        ];
+        for raw_mov in raw_moves {
+            let mov = Move::from_long_algebraic_notation(raw_mov).unwrap();
+            game.apply_move(mov).unwrap();
+        }
+        game.board.debug_check();
     }
 }
