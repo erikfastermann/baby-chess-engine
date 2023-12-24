@@ -470,13 +470,13 @@ impl Game {
     }
 
     fn apply_move_unchecked(&mut self, mov: Move) -> bool {
-        match mov {
+        self.en_passant_index = match mov {
             Move::None => unreachable!(),
-            Move::Normal { from, to } => {
-                let en_passant_index = self.apply_move_normal(from, to);
-                self.en_passant_index = en_passant_index;
-            }
-            Move::Promotion { piece, from, to } => self.apply_move_promotion(piece, from, to),
+            Move::Normal { from, to } => self.apply_move_normal(from, to),
+            Move::Promotion { piece, from, to } => {
+                self.apply_move_promotion(piece, from, to);
+                None
+            },
         };
         self.next_move_color = self.next_move_color.other();
 
