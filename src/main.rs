@@ -2,7 +2,7 @@ use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, e
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const DEFAULT_REMAINDER: usize = 4;
+const DEFAULT_DEPTH: usize = 4;
 
 fn main() -> Result<()> {
     unsafe { init() };
@@ -49,7 +49,7 @@ impl UCI {
             },
             ["go", ..] => {
                 let mov = self.game.best_move()?;
-                vec![format!("bestmove {}", mov.to_long_algebraic_notation()?)]
+                vec![format!("bestmove {}", mov.to_long_algebraic_notation())]
             }
             ["stop"] => vec![],
             ["quit"] => return Err("quit".into()),
@@ -269,41 +269,25 @@ impl fmt::Display for EndOfGameError {
 
 impl error::Error for EndOfGameError {}
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct FullPosition {
-    board: Board,
-    en_passant_index: Option<u8>,
-}
-
-impl FullPosition {
-    fn from_game(game: &Game) -> Self {
-        Self {
-            board: game.board.clone(),
-            en_passant_index: game.en_passant_index,
-        }
-    }
-}
-
 #[derive(Clone)]
 struct Game {
     board: Board,
     next_move_color: Color,
-    en_passant_index: Option<u8>,
-    full_position_counts: HashMap<FullPosition, usize>,
+    full_position_counts: HashMap<Board, usize>,
 }
 
 // TODO:
-// Currently we disallow repeating moves entirely.
-// When we are losing it might be nice to repeat moves to get a draw.
+// - Currently we disallow repeating moves entirely.
+//   When we are losing it might be nice to repeat moves to get a draw.
+// - using side and dedup
 impl Game {
     fn new() -> Self {
         let mut game = Self {
             board: Board::start(),
             next_move_color: Color::White,
-            en_passant_index: None,
             full_position_counts: HashMap::new(),
         };
-        game.full_position_counts.insert(FullPosition::from_game(&game), 1);
+        game.full_position_counts.insert(game.board.clone(), 1);
         game
     }
 
@@ -317,7 +301,6 @@ impl Game {
     fn reset(&mut self) {
         self.board = Board::start();
         self.next_move_color = Color::White;
-        self.en_passant_index = None;
         self.full_position_counts.clear();
     }
 
@@ -337,17 +320,16 @@ impl Game {
     }
 
     fn iter_white_moves_with_checks(&self) -> impl Iterator<Item = Move> {
-        let mut context = Context::new(&self.board, 0);
         Moves::iter_without_pawns_castle(&self.board.white, &self.board.black)
             .chain(Moves::iter_white_pawns_without_en_passant(&self.board.white, &self.board.black))
             .chain(self.white_en_passant_left_move().into_iter())
             .chain(self.white_en_passant_right_move().into_iter())
-            .chain(self.white_castle_right_move(&mut context).into_iter())
-            .chain(self.white_castle_left_move(&mut context).into_iter())
+            .chain(self.white_castle_right_move().into_iter())
+            .chain(self.white_castle_left_move().into_iter())
     }
 
     fn white_en_passant_left_move(&self) -> Option<Move> {
-        let Some(en_passant_index) = self.en_passant_index else {
+        let Some(en_passant_index) = self.board.en_passant_index else {
             return None;
         };
 
@@ -359,7 +341,7 @@ impl Game {
     }
 
     fn white_en_passant_right_move(&self) -> Option<Move> {
-        let Some(en_passant_index) = self.en_passant_index else {
+        let Some(en_passant_index) = self.board.en_passant_index else {
             return None;
         };
 
@@ -370,8 +352,9 @@ impl Game {
         }
     }
 
-    fn white_castle_right_move(&self, context: &mut Context) -> Option<Move> {
-        if self.board.white_can_castle_right(context) {
+    fn white_castle_right_move(&self) -> Option<Move> {
+        // TODO: using side
+        if self.board.white.can_castle_right() {
             Some(Move::Normal {
                 from: WHITE_KING_STARTING_INDEX,
                 to: WHITE_KING_STARTING_INDEX+2
@@ -381,8 +364,9 @@ impl Game {
         }
     }
 
-    fn white_castle_left_move(&self, context: &mut Context) -> Option<Move> {
-        if self.board.white_can_castle_left(context) {
+    fn white_castle_left_move(&self) -> Option<Move> {
+        // TODO: using side
+        if self.board.white.can_castle_left() {
             Some(Move::Normal {
                 from: WHITE_KING_STARTING_INDEX,
                 to: WHITE_KING_STARTING_INDEX-2
@@ -401,17 +385,16 @@ impl Game {
     }
 
     fn iter_black_moves_with_checks(&self) -> impl Iterator<Item = Move> {
-        let mut context = Context::new(&self.board, 0);
         Moves::iter_without_pawns_castle(&self.board.black, &self.board.white)
             .chain(Moves::iter_black_pawns_without_en_passant(&self.board.black, &self.board.white))
             .chain(self.black_en_passant_left_move().into_iter())
             .chain(self.black_en_passant_right_move().into_iter())
-            .chain(self.black_castle_right_move(&mut context).into_iter())
-            .chain(self.black_castle_left_move(&mut context).into_iter())
+            .chain(self.black_castle_right_move().into_iter())
+            .chain(self.black_castle_left_move().into_iter())
     }
 
     fn black_en_passant_left_move(&self) -> Option<Move> {
-        let Some(en_passant_index) = self.en_passant_index else {
+        let Some(en_passant_index) = self.board.en_passant_index else {
             return None;
         };
 
@@ -423,7 +406,7 @@ impl Game {
     }
 
     fn black_en_passant_right_move(&self) -> Option<Move> {
-        let Some(en_passant_index) = self.en_passant_index else {
+        let Some(en_passant_index) = self.board.en_passant_index else {
             return None;
         };
 
@@ -434,8 +417,9 @@ impl Game {
         }
     }
 
-    fn black_castle_right_move(&self, context: &mut Context) -> Option<Move> {
-        if self.board.black_can_castle_right(context) {
+    fn black_castle_right_move(&self) -> Option<Move> {
+        // TODO: using side
+        if self.board.black.can_castle_right() {
             Some(Move::Normal {
                 from: BLACK_KING_STARTING_INDEX,
                 to: BLACK_KING_STARTING_INDEX+2
@@ -445,8 +429,9 @@ impl Game {
         }
     }
 
-    fn black_castle_left_move(&self, context: &mut Context) -> Option<Move> {
-        if self.board.black_can_castle_left(context) {
+    fn black_castle_left_move(&self) -> Option<Move> {
+        // TODO: using side
+        if self.board.black.can_castle_left() {
             Some(Move::Normal {
                 from: BLACK_KING_STARTING_INDEX,
                 to: BLACK_KING_STARTING_INDEX-2
@@ -470,8 +455,7 @@ impl Game {
     }
 
     fn apply_move_unchecked(&mut self, mov: Move) -> bool {
-        self.en_passant_index = match mov {
-            Move::None => unreachable!(),
+        self.board.en_passant_index = match mov {
             Move::Normal { from, to } => self.apply_move_normal(from, to),
             Move::Promotion { piece, from, to } => {
                 self.apply_move_promotion(piece, from, to);
@@ -481,7 +465,7 @@ impl Game {
         self.next_move_color = self.next_move_color.other();
 
         let count = self.full_position_counts
-            .entry(FullPosition::from_game(self))
+            .entry(self.board.clone())
             .or_insert(0);
         *count += 1;
         *count >= 3
@@ -517,7 +501,7 @@ impl Game {
     }
 
     fn white_apply_move_en_passant(&mut self, from: u8, to: u8) -> bool {
-        let Some(en_passant_index) = self.en_passant_index else {
+        let Some(en_passant_index) = self.board.en_passant_index else {
             return false;
         };
         if !self.board.white.pawns.has(from) {
@@ -542,7 +526,7 @@ impl Game {
     }
 
     fn black_apply_move_en_passant(&mut self, from: u8, to: u8) -> bool {
-        let Some(en_passant_index) = self.en_passant_index else {
+        let Some(en_passant_index) = self.board.en_passant_index else {
             return false;
         };
         if !self.board.black.pawns.has(from) {
@@ -568,34 +552,34 @@ impl Game {
 
     fn white_disable_castle(&mut self, from: u8, to: u8) {
         if from == WHITE_KING_STARTING_INDEX || to == WHITE_KING_STARTING_INDEX {
-            self.board.white_castle_any_disable();
+            self.board.white.disable_castle();
         } else if from == WHITE_ROOK_LEFT_STARTING_INDEX || to == WHITE_ROOK_LEFT_STARTING_INDEX {
-            self.board.white_castle_left_disable();
+            self.board.white.disable_castle_left();
         } else if from == WHITE_ROOK_RIGHT_STARTING_INDEX || to == WHITE_ROOK_RIGHT_STARTING_INDEX {
-            self.board.white_castle_right_disable();
+            self.board.white.disable_castle_right();
         }
     }
 
     fn black_disable_castle(&mut self, from: u8, to: u8) {
         if from == BLACK_KING_STARTING_INDEX || to == BLACK_KING_STARTING_INDEX {
-            self.board.black_castle_any_disable();
+            self.board.black.disable_castle();
         } else if from == BLACK_ROOK_LEFT_STARTING_INDEX || to == BLACK_ROOK_LEFT_STARTING_INDEX {
-            self.board.black_castle_left_disable();
+            self.board.black.disable_castle_left();
         } else if from == BLACK_ROOK_RIGHT_STARTING_INDEX || to == BLACK_ROOK_RIGHT_STARTING_INDEX {
-            self.board.black_castle_right_disable();
+            self.board.black.disable_castle_right();
         }
     }
 
     fn white_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
-        if from != WHITE_KING_STARTING_INDEX || !self.board.white_castle_any_allowed() {
+        if from != WHITE_KING_STARTING_INDEX || !self.board.white.can_castle_any() {
             return false;
         }
         if to == from-2 {
-            assert!(self.board.white_castle_left_allowed());
+            assert!(self.board.white.can_castle_left());
             self.board.white_castle_left_apply();
             true
         } else if to == from+2 {
-            assert!(self.board.white_castle_right_allowed());
+            assert!(self.board.white.can_castle_right());
             self.board.white_castle_right_apply();
             true
         } else {
@@ -604,15 +588,15 @@ impl Game {
     }
 
     fn black_apply_move_castle(&mut self, from: u8, to: u8) -> bool {
-        if from != BLACK_KING_STARTING_INDEX || !self.board.black_castle_any_allowed() {
+        if from != BLACK_KING_STARTING_INDEX || !self.board.black.can_castle_any() {
             return false;
         }
         if to == from-2 {
-            assert!(self.board.black_castle_left_allowed());
+            assert!(self.board.black.can_castle_left());
             self.board.black_castle_left_apply();
             true
         } else if to == from+2 {
-            assert!(self.board.black_castle_right_allowed());
+            assert!(self.board.black.can_castle_right());
             self.board.black_castle_right_apply();
             true
         } else {
@@ -636,10 +620,10 @@ impl Game {
     fn best_move(&self) -> Result<Move> {
         let result = match self.next_move_color {
             Color::White => self.iter_white_games_moves()
-                .map(|(mov, game)| (mov, game.board.black_moves(DEFAULT_REMAINDER, game.en_passant_index)))
+                .map(|(mov, game)| (mov, search_black(&game.board)))
                 .max_by(|(_, a), (_, b)| a.cmp_white(&b)),
             Color::Black => self.iter_black_games_moves()
-                .map(|(mov, game)| (mov, game.board.white_moves(DEFAULT_REMAINDER, game.en_passant_index)))
+                .map(|(mov, game)| (mov, search_white(&game.board)))
                 .max_by(|(_, a), (_, b)| a.cmp_black(&b)),
         };
 
@@ -664,6 +648,10 @@ struct PlayerBoard {
     rooks: Bitset,
     queens: Bitset,
     king: Bitset,
+
+    // TODO: bitflags
+    can_castle_left: bool,
+    can_castle_right: bool,
 }
 
 impl PlayerBoard {
@@ -806,6 +794,36 @@ impl PlayerBoard {
         }
         let right_neighbour_pawn = Bitset::from_position(x+1, y) & self.pawns;
         !right_neighbour_pawn.is_empty()
+    }
+
+    fn can_castle_any(&self) -> bool {
+        self.can_castle_left() || self.can_castle_right()
+    }
+
+    fn can_castle_left(&self) -> bool {
+        self.can_castle_left
+    }
+
+    fn can_castle_right(&self) -> bool {
+        self.can_castle_right
+    }
+
+    fn disable_castle(&mut self) {
+        self.can_castle_left = false;
+        self.can_castle_right = false;
+    }
+
+    fn disable_castle_left(&mut self) {
+        self.can_castle_left = false;
+    }
+
+    fn disable_castle_right(&mut self) {
+        self.can_castle_right = false;
+    }
+
+    fn reset_castle(&mut self, old: &Self) {
+        self.can_castle_left = old.can_castle_left;
+        self.can_castle_right = old.can_castle_right;
     }
 }
 
@@ -1249,16 +1267,11 @@ impl Moves {
     }
 }
 
-const FLAG_WHITE_CAN_CASTLE_LEFT_INDEX: u8 = 0;
-const FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX: u8 = 1;
-const FLAG_BLACK_CAN_CASTLE_LEFT_INDEX: u8 = 2;
-const FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX: u8 = 3;
-
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Board {
     black: PlayerBoard,
     white: PlayerBoard,
-    flags: Bitset,
+    en_passant_index: Option<u8>,
 }
 
 impl fmt::Display for Board {
@@ -1324,14 +1337,6 @@ const BLACK_ROOK_RIGHT_STARTING_INDEX: u8 = 7;
 // Currently we still calculate castling moves
 // even if they are not strictly allowed.
 impl Board {
-    fn default_flags() -> Bitset {
-        Bitset::zero()
-            .with(FLAG_WHITE_CAN_CASTLE_LEFT_INDEX)
-            .with(FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX)
-            .with(FLAG_BLACK_CAN_CASTLE_LEFT_INDEX)
-            .with(FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX)
-    }
-
     fn start() -> Self {
         let black_pawns = (0..8).map(|x| Bitset::from_position(x, 1))
             .fold(Bitset::zero(), |pawns, pawn| pawns | pawn);
@@ -1345,6 +1350,8 @@ impl Board {
                 queens: Bitset::from_position(3, 0),
                 king: Bitset::from_index(BLACK_KING_STARTING_INDEX),
                 pawns: black_pawns,
+                can_castle_left: true,
+                can_castle_right: true,
             },
             white: PlayerBoard {
                 rooks: Bitset::from_index(WHITE_ROOK_LEFT_STARTING_INDEX) | Bitset::from_index(WHITE_ROOK_RIGHT_STARTING_INDEX),
@@ -1353,8 +1360,10 @@ impl Board {
                 queens: Bitset::from_position(3, 7),
                 king: Bitset::from_index(WHITE_KING_STARTING_INDEX),
                 pawns: white_pawns,
+                can_castle_left: true,
+                can_castle_right: true,
             },
-            flags: Self::default_flags(),
+            en_passant_index: None,
         };
         board.debug_check();
         board
@@ -1374,678 +1383,40 @@ impl Board {
         debug_assert!(self.bitset().count() <= 32);
     }
 
-    fn white_apply_moves_with(
-        &self,
-        context: &mut Context,
-        get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
-        get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
-        get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
-        next: impl Fn(&mut Context, u8, u8),
-    ) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.black.bitset();
-
-        for from in get_piece_bitset(&self.white).indices() {
-            let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                get_piece_bitset_mut(&mut context.next.white).mov(from, to);
-                next(context, from, to);
-                *get_piece_bitset_mut(&mut context.next.white) = *get_piece_bitset(&self.white);
-            }
-            for to in captures.indices() {
-                context.next.black.captured(to);
-                get_piece_bitset_mut(&mut context.next.white).mov(from, to);
-                next(context, from, to);
-                *get_piece_bitset_mut(&mut context.next.white) = *get_piece_bitset(&self.white);
-                context.next.black = self.black;
-            }
-        }
-    }
-
-    fn white_apply_moves(
-        &self,
-        context: &mut Context,
-        get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
-        get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
-        get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
-    ) {
-        self.white_apply_moves_with(
-            context,
-            get_piece_bitset,
-            get_piece_bitset_mut,
-            get_moves,
-            |context, from, to| {
-                context.score.update_white(
-                    context.next.black_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-            },
-        );
-    }
-
-    fn black_apply_moves_with(
-        &self,
-        context: &mut Context,
-        get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
-        get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
-        get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
-        next: impl Fn(&mut Context, u8, u8),
-    ) {
-        let all_pieces = self.bitset();
-        let enemy_pieces = self.white.bitset();
-
-        for from in get_piece_bitset(&self.black).indices() {
-            let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
-            for to in moves.indices() {
-                get_piece_bitset_mut(&mut context.next.black).mov(from, to);
-                next(context, from, to);
-                *get_piece_bitset_mut(&mut context.next.black) = *get_piece_bitset(&self.black);
-            }
-            for to in captures.indices() {
-                context.next.white.captured(to);
-                get_piece_bitset_mut(&mut context.next.black).mov(from, to);
-                next(context, from, to);
-                *get_piece_bitset_mut(&mut context.next.black) = *get_piece_bitset(&self.black);
-                context.next.white = self.white;
-            }
-        }
-    }
-
-    fn black_apply_moves(
-        &self,
-        context: &mut Context,
-        get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
-        get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
-        get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
-    ) {
-        self.black_apply_moves_with(
-            context,
-            get_piece_bitset,
-            get_piece_bitset_mut,
-            get_moves,
-            |context, from, to| {
-                context.score.update_black(
-                    context.next.white_moves(context.remainder, None),
-                    Move::Normal { from, to },
-                );
-            },
-        );
-    }
-
-    fn white_moves(&self, remainder: usize, en_passant_index: Option<u8>) -> Score {
-        if self.white.king.is_empty() {
-            return Score::checkmate_white();
-        }
-
-        self.debug_check();
-        if remainder == 0 {
-            return Score::board(self);
-        }
-        let remainder = remainder-1;
-
-        let mut context = Context::new(self, remainder);
-        self.white_pawns(&mut context, en_passant_index);
-        self.white_queens(&mut context);
-        self.white_rooks(&mut context);
-        self.white_bishops(&mut context);
-        self.white_knights(&mut context);
-        self.white_king(&mut context);
-        self.white_castle(&mut context);
-        context.score.finalize()
-    }
-
-    fn black_moves(&self, remainder: usize, en_passant_index: Option<u8>) -> Score {
-        if self.black.king.is_empty() {
-            return Score::checkmate_black();
-        }
-
-        self.debug_check();
-        if remainder == 0 {
-            return Score::board(self);
-        }
-        let remainder = remainder-1;
-
-        let mut context = Context::new(self, remainder);
-        self.black_pawns(&mut context, en_passant_index);
-        self.black_queens(&mut context);
-        self.black_rooks(&mut context);
-        self.black_bishops(&mut context);
-        self.black_knights(&mut context);
-        self.black_king(&mut context);
-        self.black_castle(&mut context);
-        context.score.finalize()
-    }
-
-    fn white_king(&self, context: &mut Context) {
-        self.white_apply_moves(
-            context,
-            |player_board| &player_board.king,
-            |player_board| &mut player_board.king,
-            Moves::king,
-        );
-    }
-
-    fn black_king(&self, context: &mut Context) {
-        self.black_apply_moves(
-            context,
-            |player_board| &player_board.king,
-            |player_board| &mut player_board.king,
-            Moves::king,
-        );
-    }
-
-    fn white_knights(&self, context: &mut Context) {
-        self.white_apply_moves(
-            context,
-            |player_board| &player_board.knights,
-            |player_board| &mut player_board.knights,
-            Moves::knight,
-        );
-    }
-
-    fn black_knights(&self, context: &mut Context) {
-        self.black_apply_moves(
-            context,
-            |player_board| &player_board.knights,
-            |player_board| &mut player_board.knights,
-            Moves::knight,
-        );
-    }
-
-    fn white_bishops(&self, context: &mut Context) {
-        self.white_apply_moves(
-            context,
-            |player_board| &player_board.bishops,
-            |player_board| &mut player_board.bishops,
-            Moves::bishop,
-        );
-    }
-
-    fn black_bishops(&self, context: &mut Context) {
-        self.black_apply_moves(
-            context,
-            |player_board| &player_board.bishops,
-            |player_board| &mut player_board.bishops,
-            Moves::bishop,
-        );
-    }
-
-    fn white_rooks(&self, context: &mut Context) {
-        self.white_apply_moves(
-            context,
-            |player_board| &player_board.rooks,
-            |player_board| &mut player_board.rooks,
-            Moves::rook,
-        );
-    }
-
-    fn black_rooks(&self, context: &mut Context) {
-        self.black_apply_moves(
-            context,
-            |player_board| &player_board.rooks,
-            |player_board| &mut player_board.rooks,
-            Moves::rook,
-        );
-    }
-
-    fn white_queens(&self, context: &mut Context) {
-        self.white_apply_moves(
-            context,
-            |player_board| &player_board.queens,
-            |player_board| &mut player_board.queens,
-            Moves::queen,
-        );
-    }
-
-    fn black_queens(&self, context: &mut Context) {
-        self.black_apply_moves(
-            context,
-            |player_board| &player_board.queens,
-            |player_board| &mut player_board.queens,
-            Moves::queen,
-        );
-    }
-
-    fn white_castle_any_allowed(&self) -> bool {
-        self.white_castle_left_allowed() || self.white_castle_right_allowed()
-    }
-
-    fn white_castle_any_disable(&mut self) {
-        self.white_castle_left_disable();
-        self.white_castle_right_disable();
-    }
-
-    fn white_castle_left_allowed(&self) -> bool {
-        self.flags.has(FLAG_WHITE_CAN_CASTLE_LEFT_INDEX)
-    }
-
-    fn white_castle_left_disable(&mut self) {
-        self.flags.clear(FLAG_WHITE_CAN_CASTLE_LEFT_INDEX)
-    }
-
-    fn white_castle_right_allowed(&self) -> bool {
-        self.flags.has(FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX)
-    }
-
-    fn white_castle_right_disable(&mut self) {
-        self.flags.clear(FLAG_WHITE_CAN_CASTLE_RIGHT_INDEX)
-    }
-
-    fn black_castle_any_allowed(&self) -> bool {
-        self.black_castle_left_allowed() || self.black_castle_right_allowed()
-    }
-
-    fn black_castle_any_disable(&mut self) {
-        self.black_castle_left_disable();
-        self.black_castle_right_disable();
-    }
-
-    fn black_castle_left_allowed(&self) -> bool {
-        self.flags.has(FLAG_BLACK_CAN_CASTLE_LEFT_INDEX)
-    }
-
-    fn black_castle_left_disable(&mut self) {
-        self.flags.clear(FLAG_BLACK_CAN_CASTLE_LEFT_INDEX)
-    }
-
-    fn black_castle_right_allowed(&self) -> bool {
-        self.flags.has(FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX)
-    }
-
-    fn black_castle_right_disable(&mut self) {
-        self.flags.clear(FLAG_BLACK_CAN_CASTLE_RIGHT_INDEX)
-    }
-
-    fn white_castle(&self, context: &mut Context) {
-        if self.white_can_castle_right(context) {
-            self.white_castle_right(context);
-        }
-        if self.white_can_castle_left(context) {
-            self.white_castle_left(context);
-        }
-    }
-
-    fn white_can_castle_right(&self, context: &mut Context) -> bool {
-        let all_pieces = self.bitset();
-        let king_index = self.white.king.first_index();
-        let allowed = king_index == WHITE_KING_STARTING_INDEX
-            && self.white_castle_right_allowed()
-            && self.white.rooks.has(WHITE_ROOK_RIGHT_STARTING_INDEX)
-            && !all_pieces.has(position_to_index(5, 7))
-            && !all_pieces.has(position_to_index(6, 7));
-        if !allowed {
-            return false;
-        }
-
-        for shift in 0..=2 {
-            context.next.white.king.mov(WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX+shift);
-            let check = context.next.black.has_check(&context.next.white, Color::Black);
-            context.next.white.king = self.white.king;
-            if check {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn white_can_castle_left(&self, context: &mut Context) -> bool {
-        let all_pieces = self.bitset();
-        let king_index = self.white.king.first_index();
-        let allowed = king_index == WHITE_KING_STARTING_INDEX
-            && self.white_castle_left_allowed()
-            && self.white.rooks.has(WHITE_ROOK_LEFT_STARTING_INDEX)
-            && !all_pieces.has(position_to_index(3, 7))
-            && !all_pieces.has(position_to_index(2, 7))
-            && !all_pieces.has(position_to_index(1, 7));
-        if !allowed {
-            return false;
-        }
-
-        for shift in 0..=2 {
-            context.next.white.king.mov(WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX-shift);
-            let check = context.next.black.has_check(&context.next.white, Color::Black);
-            context.next.white.king = self.white.king;
-            if check {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn white_castle_right_apply(&mut self) -> Move {
+    // TODO
+    fn white_castle_right_apply(&mut self) {
         let (king_from, king_to) = (WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX+2);
         let (rook_from, rook_to) = (WHITE_ROOK_RIGHT_STARTING_INDEX, position_to_index(5, 7));
         self.white.king.mov(king_from, king_to);
         self.white.rooks.mov(rook_from, rook_to);
-        self.white_castle_any_disable();
-        Move::Normal { from: king_from, to: king_to }
+        self.white.disable_castle();
     }
 
-    fn white_castle_left_apply(&mut self) -> Move {
+    // TODO
+    fn white_castle_left_apply(&mut self) {
         let (king_from, king_to) = (WHITE_KING_STARTING_INDEX, WHITE_KING_STARTING_INDEX-2);
         let (rook_from, rook_to) = (WHITE_ROOK_LEFT_STARTING_INDEX, position_to_index(3, 7));
         self.white.king.mov(king_from, king_to);
         self.white.rooks.mov(rook_from, rook_to);
-        self.white_castle_any_disable();
-        Move::Normal { from: king_from, to: king_to }
+        self.white.disable_castle();
     }
 
-    fn white_castle_reset(&self, context: &mut Context) {
-        context.next.flags = self.flags;
-        context.next.white.rooks = self.white.rooks;
-        context.next.white.king = self.white.king;
-    }
-
-    fn white_castle_right(&self, context: &mut Context) {
-        let mov = context.next.white_castle_right_apply();
-        context.score.update_white(
-            context.next.black_moves(context.remainder, None),
-            mov,
-        );
-        self.white_castle_reset(context);
-    }
-
-    fn white_castle_left(&self, context: &mut Context) {
-        let mov = context.next.white_castle_left_apply();
-        context.score.update_white(
-            context.next.black_moves(context.remainder, None),
-            mov,
-        );
-        self.white_castle_reset(context);
-    }
-
-    fn black_castle(&self, context: &mut Context) {
-        if self.black_can_castle_right(context) {
-            self.black_castle_right(context);
-        }
-        if self.black_can_castle_left(context) {
-            self.black_castle_left(context);
-        }
-    }
-
-    fn black_can_castle_right(&self, context: &mut Context) -> bool {
-        let all_pieces = self.bitset();
-        let king_index = self.black.king.first_index();
-        let allowed = king_index == BLACK_KING_STARTING_INDEX
-            && self.black_castle_right_allowed()
-            && self.black.rooks.has(BLACK_ROOK_RIGHT_STARTING_INDEX)
-            && !all_pieces.has(position_to_index(5, 0))
-            && !all_pieces.has(position_to_index(6, 0));
-        if !allowed {
-            return false;
-        }
-
-        for shift in 0..=2 {
-            context.next.black.king.mov(BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX+shift);
-            let check = context.next.white.has_check(&context.next.black, Color::White);
-            context.next.black.king = self.black.king;
-            if check {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn black_can_castle_left(&self, context: &mut Context) -> bool {
-        let all_pieces = self.bitset();
-        let king_index = self.black.king.first_index();
-        let allowed = king_index == BLACK_KING_STARTING_INDEX
-            && self.black_castle_left_allowed()
-            && self.black.rooks.has(BLACK_ROOK_LEFT_STARTING_INDEX)
-            && !all_pieces.has(position_to_index(3, 0))
-            && !all_pieces.has(position_to_index(2, 0))
-            && !all_pieces.has(position_to_index(1, 0));
-        if !allowed {
-            return false;
-        }
-
-        for shift in 0..=2 {
-            context.next.black.king.mov(BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX-shift);
-            let check = context.next.white.has_check(&context.next.black, Color::White);
-            context.next.black.king = self.black.king;
-            if check {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn black_castle_right_apply(&mut self) -> Move {
+    // TODO
+    fn black_castle_right_apply(&mut self) {
         let (king_from, king_to) = (BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX+2);
         let (rook_from, rook_to) = (BLACK_ROOK_RIGHT_STARTING_INDEX, position_to_index(5, 0));
         self.black.king.mov(king_from, king_to);
         self.black.rooks.mov(rook_from, rook_to);
-        self.black_castle_any_disable();
-        Move::Normal { from: king_from, to: king_to }
+        self.black.disable_castle();
     }
 
-    fn black_castle_left_apply(&mut self) -> Move {
+    // TODO
+    fn black_castle_left_apply(&mut self) {
         let (king_from, king_to) = (BLACK_KING_STARTING_INDEX, BLACK_KING_STARTING_INDEX-2);
         let (rook_from, rook_to) = (BLACK_ROOK_LEFT_STARTING_INDEX, position_to_index(3, 0));
         self.black.king.mov(king_from, king_to);
         self.black.rooks.mov(rook_from, rook_to);
-        self.black_castle_any_disable();
-        Move::Normal { from: king_from, to: king_to }
-    }
-
-    fn black_castle_reset(&self, context: &mut Context) {
-        context.next.flags = self.flags;
-        context.next.black.rooks = self.black.rooks;
-        context.next.black.king = self.black.king;
-    }
-
-    fn black_castle_right(&self, context: &mut Context) {
-        let mov = context.next.black_castle_right_apply();
-        context.score.update_black(
-            context.next.white_moves(context.remainder, None),
-            mov,
-        );
-        self.black_castle_reset(context);
-    }
-
-    fn black_castle_left(&self, context: &mut Context) {
-        let mov = context.next.black_castle_left_apply();
-        context.score.update_black(
-            context.next.white_moves(context.remainder, None),
-            mov,
-        );
-        self.black_castle_reset(context);
-    }
-
-    fn white_pawns(&self, context: &mut Context, en_passant_index: Option<u8>) {
-        self.white_apply_moves(
-            context,
-            |player_board| &player_board.pawns,
-            |player_board| &mut player_board.pawns,
-            Moves::white_pawn_normal_without_en_passant,
-        );
-
-        self.white_apply_moves_with(
-            context,
-            |player_board| &player_board.pawns,
-            |player_board| &mut player_board.pawns,
-            Moves::white_pawn_promotion_without_en_passant,
-            |context, from, to| {
-                context.next.white.pawns.clear(to);
-                self.white_pawn_promote_figures(context, from, to);
-            },
-        );
-
-        if let Some(en_passant_index) = en_passant_index {
-            self.white_en_passant(context, en_passant_index);
-        }
-    }
-
-    fn white_pawn_capture(
-        &self,
-        context: &mut Context,
-        captured: u8,
-        from: u8,
-        to: u8,
-    ) {
-        context.next.black.captured(captured);
-        context.next.white.pawns = context.next.white.pawns.without(from).with(to);
-        context.score.update_white(
-            context.next.black_moves(context.remainder, None), 
-            Move::Normal { from, to },
-        );
-        context.next.white.pawns = self.white.pawns;
-        context.next.black = self.black;
-    }
-
-    fn white_pawn_promote_figures(
-        &self,
-        context: &mut Context,
-        from: u8,
-        to: u8,
-    ) {
-        context.next.white.queens.set(to);
-        context.score.update_white(
-            context.next.black_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Queen, from, to },
-        );
-        context.next.white.queens = self.white.queens;
-
-        context.next.white.rooks.set(to);
-        context.score.update_white(
-            context.next.black_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Rook, from, to },
-        );
-        context.next.white.rooks = self.white.rooks;
-
-        context.next.white.knights.set(to);
-        context.score.update_white(
-            context.next.black_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Knight, from, to },
-        );
-        context.next.white.knights = self.white.knights;
-
-        context.next.white.bishops.set(to);
-        context.score.update_white(
-            context.next.black_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Bishop, from, to },
-        );
-        context.next.white.bishops = self.white.bishops;
-    }
-
-    fn white_en_passant(&self, context: &mut Context, en_passant_index: u8) {
-        let (x, y) = index_to_position(en_passant_index);
-
-        if self.white.has_en_passant_left(&self.black, en_passant_index) {
-            self.white_pawn_capture(
-                context,
-                en_passant_index,
-                position_to_index(x-1, y),
-                position_to_index(x, y-1),
-            );
-        }
-
-        if self.white.has_en_passant_right(&self.black, en_passant_index) {
-            self.white_pawn_capture(
-                context,
-                en_passant_index,
-                position_to_index(x+1, y),
-                position_to_index(x, y-1),
-            );
-        }
-    }
-
-    fn black_pawns(&self, context: &mut Context, en_passant_index: Option<u8>) {
-        self.black_apply_moves(
-            context,
-            |player_board| &player_board.pawns,
-            |player_board| &mut player_board.pawns,
-            Moves::black_pawn_normal_without_en_passant,
-        );
-
-        self.black_apply_moves_with(
-            context,
-            |player_board| &player_board.pawns,
-            |player_board| &mut player_board.pawns,
-            Moves::black_pawn_promotion_without_en_passant,
-            |context, from, to| {
-                context.next.black.pawns.clear(to);
-                self.black_pawn_promote_figures(context, from, to);
-            },
-        );
-
-        if let Some(en_passant_index) = en_passant_index {
-            self.black_en_passant(context, en_passant_index);
-        }
-    }
-
-    fn black_pawn_capture(
-        &self,
-        context: &mut Context,
-        captured: u8,
-        from: u8,
-        to: u8,
-    ) {
-        context.next.white.captured(captured);
-        context.next.black.pawns = context.next.black.pawns.without(from).with(to);
-        context.score.update_black(
-            context.next.white_moves(context.remainder, None),
-            Move::Normal { from, to },
-        );
-        context.next.black.pawns = self.black.pawns;
-        context.next.white = self.white;
-    }
-
-    fn black_pawn_promote_figures(
-        &self,
-        context: &mut Context,
-        from: u8,
-        to: u8,
-    ) {
-        context.next.black.queens.set(to);
-        context.score.update_black(
-            context.next.white_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Queen, from, to },
-        );
-        context.next.black.queens = self.black.queens;
-
-        context.next.black.rooks.set(to);
-        context.score.update_black(
-            context.next.white_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Rook, from, to },
-        );
-        context.next.black.rooks = self.black.rooks;
-
-        context.next.black.knights.set(to);
-        context.score.update_black(
-            context.next.white_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Knight, from, to },
-        );
-        context.next.black.knights = self.black.knights;
-
-        context.next.black.bishops.set(to);
-        context.score.update_black(
-            context.next.white_moves(context.remainder, None), 
-            Move::Promotion { piece: Piece::Bishop, from, to },
-        );
-        context.next.black.bishops = self.black.bishops;
-    }
-
-    fn black_en_passant(&self, context: &mut Context, en_passant_index: u8) {
-        let (x, y) = index_to_position(en_passant_index);
-
-        if self.black.has_en_passant_left(&self.white, en_passant_index) {
-            self.black_pawn_capture(
-                context,
-                en_passant_index,
-                position_to_index(x-1, y),
-                position_to_index(x, y+1),
-            );
-        }
-
-        if self.black.has_en_passant_right(&self.white, en_passant_index) {
-            self.black_pawn_capture(
-                context,
-                en_passant_index,
-                position_to_index(x+1, y),
-                position_to_index(x, y+1),
-            );
-        }
+        self.black.disable_castle();
     }
 }
 
@@ -2092,17 +1463,13 @@ impl Piece {
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Move {
-    None,
     Normal { from: u8, to: u8 },
     Promotion { piece: Piece, from: u8, to: u8 },
 }
 
 impl fmt::Display for Move {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.to_long_algebraic_notation() {
-            Ok(s) => write!(f, "{s}"),
-            Err(_) => write!(f, "None")
-        }
+        write!(f, "{}", self.to_long_algebraic_notation())
     }
 }
 
@@ -2180,15 +1547,14 @@ impl Move {
         }
     }
 
-    fn to_long_algebraic_notation(&self) -> Result<String> {
+    fn to_long_algebraic_notation(&self) -> String {
         match *self {
-            Move::None => Err("cannot convert none move to long algebraic notation".into()),
-            Move::Normal { from, to } => Ok(Self::long_algebraic_notation_normal(from, to)),
+            Move::Normal { from, to } => Self::long_algebraic_notation_normal(from, to),
             Move::Promotion { piece, from, to } => {
                 assert!(piece.can_promote_to());
                 let mut s = Self::long_algebraic_notation_normal(from, to);
                 s.push(piece.to_symbol());
-                Ok(s)
+                s
             },
         }
     }
@@ -2237,55 +1603,69 @@ impl Color {
             Color::Black => Color::White,
         }
     }
-}
 
-struct Context {
-    score: Score,
-    remainder: usize,
-    next: Board,
-}
+    fn direction(&self) -> i8 {
+        match self {
+            Color::White => -1,
+            Color::Black => 1,
+        }
+    }
 
-impl Context {
-    fn new(board: &Board, remainder: usize) -> Self {
-        Self {
-            score: Score::zero(),
-            remainder,
-            next: board.clone(),
+    fn king_starting_index(&self) -> u8 {
+        match self {
+            Color::White => WHITE_KING_STARTING_INDEX,
+            Color::Black => BLACK_KING_STARTING_INDEX,
+        }
+    }
+
+    fn first_row(&self) -> u8 {
+        match self {
+            Color::White => 7,
+            Color::Black => 0,
+        }
+    }
+
+    fn rook_left_starting_index(&self) -> u8 {
+        match self {
+            Color::White => WHITE_ROOK_LEFT_STARTING_INDEX,
+            Color::Black => BLACK_ROOK_LEFT_STARTING_INDEX,
+        }
+    }
+
+    fn rook_right_starting_index(&self) -> u8 {
+        match self {
+            Color::White => WHITE_ROOK_RIGHT_STARTING_INDEX,
+            Color::Black => BLACK_ROOK_RIGHT_STARTING_INDEX,
         }
     }
 }
 
 struct Score {
     best_points: f64,
-    best_move: Move,
 }
 
 impl Score {
     fn zero() -> Self {
         Self {
             best_points: 0.0,
-            best_move: Move::None,
         }
     }
 
     fn board(board: &Board) -> Self {
         Self {
             best_points: board.black.score() - board.white.score(),
-            best_move: Move::None,
         }
     }
 
     fn checkmate_black() -> Self {
         Self {
             best_points: -150.0,
-            best_move: Move::None,
         }
     }
 
     fn checkmate_white() -> Self {
         Self {
             best_points: 150.0,
-            best_move: Move::None,
         }
     }
 
@@ -2297,22 +1677,16 @@ impl Score {
         rhs.best_points.total_cmp(&self.best_points)
     }
 
-    fn update_white(&mut self, other: Score, mov: Move) {
-        if self.best_move == Move::None || other.best_points < self.best_points {
+    fn update_white(&mut self, other: Score) {
+        if other.best_points < self.best_points {
             self.best_points = other.best_points;
-            self.best_move = mov;
         }
     }
 
-    fn update_black(&mut self, other: Score, mov: Move) {
-        if self.best_move == Move::None || other.best_points > self.best_points {
+    fn update_black(&mut self, other: Score) {
+        if other.best_points > self.best_points {
             self.best_points = other.best_points;
-            self.best_move = mov;
         }
-    }
-
-    fn finalize(self) -> Score {
-        self
     }
 }
 
@@ -2417,5 +1791,464 @@ mod tests {
             game.apply_move(mov).unwrap();
         }
         game.board.debug_check();
+    }
+}
+
+trait Side {
+    fn color() -> Color;
+
+    fn search(&mut self);
+
+    fn current(&self) -> &Board;
+    fn current_we(&self) -> &PlayerBoard;
+    fn current_enemy(&self) -> &PlayerBoard;
+
+    fn next(&mut self) -> &mut Board;
+    fn next_we(&mut self) -> &mut PlayerBoard;
+    fn next_enemy(&mut self) -> &mut PlayerBoard;
+
+    fn pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
+    fn pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
+
+    fn all_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Moves;
+}
+
+struct WhiteSide {
+    current: Board,
+    next: Board,
+    score: Score,
+    depth: usize,
+}
+
+impl WhiteSide {
+    fn new(board: &Board, depth: usize) -> Self {
+        Self {
+            current: board.clone(),
+            next: board.clone(),
+            score: Score::zero(),
+            depth,
+        }
+    }
+}
+
+impl Side for WhiteSide {
+    fn color() -> Color {
+        Color::White
+    }
+
+    fn search(&mut self) {
+        if self.current.white.king.is_empty() {
+            self.score.update_white(Score::checkmate_white());
+        } else if self.depth == 0 {
+            self.score.update_white(Score::board(self.current()));
+        } else {
+            let mut other = BlackSide::new(&self.next, self.depth - 1);
+            search(&mut other);
+            self.score.update_white(other.score);
+        }
+    }
+
+    fn current(&self) -> &Board {
+        &self.current
+    }
+
+    fn current_we(&self) -> &PlayerBoard {
+        &self.current.white
+    }
+
+    fn current_enemy(&self) -> &PlayerBoard {
+        &self.current.black
+    }
+
+    fn next(&mut self) -> &mut Board {
+        &mut self.next
+    }
+
+    fn next_we(&mut self) -> &mut PlayerBoard {
+        &mut self.next.white
+    }
+
+    fn next_enemy(&mut self) -> &mut PlayerBoard {
+        &mut self.next.black
+    }
+
+    fn pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::white_pawn_normal_without_en_passant(all_pieces, index, enemy_pieces)
+    }
+
+    fn pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::white_pawn_promotion_without_en_passant(all_pieces, index, enemy_pieces)
+    }
+
+    fn all_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Moves {
+        Moves::white_pawns_without_en_passant(we, enemy)
+    }
+}
+
+struct BlackSide {
+    current: Board,
+    next: Board,
+    score: Score,
+    depth: usize,
+}
+
+impl BlackSide {
+    fn new(board: &Board, depth: usize) -> Self {
+        Self {
+            current: board.clone(),
+            next: board.clone(),
+            score: Score::zero(),
+            depth,
+        }
+    }
+}
+
+impl Side for BlackSide {
+    fn color() -> Color {
+        Color::Black
+    }
+
+    fn search(&mut self) {
+        if self.current.black.king.is_empty() {
+            self.score.update_black(Score::checkmate_black());
+        } else if self.depth == 0 {
+            self.score.update_black(Score::board(self.current()));
+        } else {
+            let mut other = WhiteSide::new(&self.next, self.depth - 1);
+            search(&mut other);
+            self.score.update_black(other.score);
+        }
+    }
+
+    fn current(&self) -> &Board {
+        &self.current
+    }
+
+    fn current_we(&self) -> &PlayerBoard {
+        &self.current.black
+    }
+
+    fn current_enemy(&self) -> &PlayerBoard {
+        &self.current.white
+    }
+
+    fn next(&mut self) -> &mut Board {
+        &mut self.next
+    }
+
+    fn next_we(&mut self) -> &mut PlayerBoard {
+        &mut self.next.black
+    }
+
+    fn next_enemy(&mut self) -> &mut PlayerBoard {
+        &mut self.next.white
+    }
+
+    fn pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::black_pawn_normal_without_en_passant(all_pieces, index, enemy_pieces)
+    }
+
+    fn pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::black_pawn_promotion_without_en_passant(all_pieces, index, enemy_pieces)
+    }
+
+    fn all_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Moves {
+        Moves::black_pawns_without_en_passant(we, enemy)
+    }
+}
+
+fn search_white(board: &Board) -> Score {
+    let mut side = WhiteSide::new(board, DEFAULT_DEPTH);
+    search(&mut side);
+    side.score
+}
+
+fn search_black(board: &Board) -> Score {
+    let mut side = BlackSide::new(board, DEFAULT_DEPTH);
+    search(&mut side);
+    side.score
+}
+
+fn apply_moves_with<S: Side>(
+    side: &mut S,
+    get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
+    get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
+    get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
+    next: impl Fn(&mut S, u8, u8),
+) {
+    let enemy_pieces = side.current_enemy().bitset();
+    let all_pieces = enemy_pieces | side.current_we().bitset();
+
+    for from in get_piece_bitset(side.current_we()).indices() {
+        let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
+        for to in moves.indices() {
+            get_piece_bitset_mut(side.next_we()).mov(from, to);
+            next(side, from, to);
+            *get_piece_bitset_mut(side.next_we()) = *get_piece_bitset(side.current_we());
+        }
+        for to in captures.indices() {
+            side.next_enemy().captured(to);
+            get_piece_bitset_mut(side.next_we()).mov(from, to);
+            next(side, from, to);
+            *get_piece_bitset_mut(side.next_we()) = *get_piece_bitset(side.current_we());
+            *side.next_enemy() = *side.current_enemy();
+        }
+    }
+}
+
+fn apply_moves<S: Side>(
+    side: &mut S,
+    get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
+    get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
+    get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
+) {
+    apply_moves_with(
+        side,
+        get_piece_bitset,
+        get_piece_bitset_mut,
+        get_moves,
+        |side, _, _| side.search(),
+    );
+}
+
+fn search(side: &mut impl Side) {
+    side.current().debug_check();
+    search_pawns(side);
+    search_queens(side);
+    search_rooks(side);
+    search_bishops(side);
+    search_knights(side);
+    search_king(side);
+    search_castle(side);
+}
+
+fn search_king(side: &mut impl Side) {
+    apply_moves(
+        side,
+        |player_board| &player_board.king,
+        |player_board| &mut player_board.king,
+        Moves::king,
+    );
+}
+
+fn search_knights(side: &mut impl Side) {
+    apply_moves(
+        side,
+        |player_board| &player_board.knights,
+        |player_board| &mut player_board.knights,
+        Moves::knight,
+    );
+}
+
+fn search_bishops(side: &mut impl Side) {
+    apply_moves(
+        side,
+        |player_board| &player_board.bishops,
+        |player_board| &mut player_board.bishops,
+        Moves::bishop,
+    );
+}
+
+fn search_rooks(side: &mut impl Side) {
+    apply_moves(
+        side,
+        |player_board| &player_board.rooks,
+        |player_board| &mut player_board.rooks,
+        Moves::rook,
+    );
+}
+
+fn search_queens(side: &mut impl Side) {
+    apply_moves(
+        side,
+        |player_board| &player_board.queens,
+        |player_board| &mut player_board.queens,
+        Moves::queen,
+    );
+}
+
+fn search_castle(side: &mut impl Side) {
+    if can_castle_right(side) {
+        search_castle_right(side);
+    }
+    if can_castle_left(side) {
+        search_castle_left(side);
+    }
+}
+
+fn can_castle_right<S: Side>(side: &mut S) -> bool {
+    let all_pieces = side.current().bitset();
+    let king_index = side.current_we().king.first_index();
+
+    let king_starting_index = S::color().king_starting_index();
+    let row = S::color().first_row();
+
+    let allowed = king_index == king_starting_index
+        && side.current_we().can_castle_right()
+        && side.current_we().rooks.has(S::color().rook_right_starting_index())
+        && !all_pieces.has(position_to_index(5, row))
+        && !all_pieces.has(position_to_index(6, row));
+    if !allowed {
+        return false;
+    }
+
+    // TODO: clone
+    let current_we = side.current_we().clone();
+    for shift in 0..=2 {
+        side.next_we().king.mov(king_starting_index, king_starting_index+shift);
+        let check = side.next_enemy().has_check(&current_we, S::color().other());
+        side.next_we().king = side.current_we().king;
+        if check {
+            return false;
+        }
+    }
+    true
+}
+
+fn can_castle_left<S: Side>(side: &mut S) -> bool {
+    let all_pieces = side.current().bitset();
+    let king_index = side.current_we().king.first_index();
+
+    let king_starting_index = S::color().king_starting_index();
+    let row = S::color().first_row();
+
+    let allowed = king_index == king_starting_index
+        && side.current_we().can_castle_left()
+        && side.current_we().rooks.has(S::color().rook_left_starting_index())
+        && !all_pieces.has(position_to_index(3, row))
+        && !all_pieces.has(position_to_index(2, row))
+        && !all_pieces.has(position_to_index(1, row));
+    if !allowed {
+        return false;
+    }
+
+    // TODO: clone
+    let current_we = side.current_we().clone();
+    for shift in 0..=2 {
+        side.next_we().king.mov(king_starting_index, king_starting_index-shift);
+        let check = side.next_enemy().has_check(&current_we, S::color().other());
+        side.next_we().king = side.current_we().king;
+        if check {
+            return false;
+        }
+    }
+    true
+}
+
+fn search_castle_reset(side: &mut impl Side) {
+    // TODO: clone
+    let current_we = side.current_we().clone();
+    side.next_we().reset_castle(&current_we);
+    side.next_we().rooks = side.current_we().rooks;
+    side.next_we().king = side.current_we().king;
+}
+
+fn search_castle_right<S: Side>(side: &mut S) {
+    side.next_we().king.mov(
+        S::color().king_starting_index(),
+        S::color().king_starting_index() + 2,
+    );
+    side.next_we().rooks.mov(
+        S::color().rook_right_starting_index(),
+        position_to_index(5, S::color().first_row(),
+    ));
+    side.next_we().disable_castle();
+
+    side.search();
+    search_castle_reset(side);
+}
+
+fn search_castle_left<S: Side>(side: &mut S) {
+    side.next_we().king.mov(
+        S::color().king_starting_index(),
+        S::color().king_starting_index() - 2,
+    );
+    side.next_we().rooks.mov(
+        S::color().rook_left_starting_index(),
+        position_to_index(3, S::color().first_row(),
+    ));
+    side.next_we().disable_castle();
+
+    side.search();
+    search_castle_reset(side);
+}
+
+fn search_pawns<S: Side>(side: &mut S) {
+    // TODO: double step save en passant index
+
+    apply_moves(
+        side,
+        |player_board| &player_board.pawns,
+        |player_board| &mut player_board.pawns,
+        S::pawn_normal_without_en_passant,
+    );
+
+    apply_moves_with(
+        side,
+        |player_board| &player_board.pawns,
+        |player_board| &mut player_board.pawns,
+        S::pawn_promotion_without_en_passant,
+        |side, _, to| {
+            side.next_we().pawns.clear(to);
+            search_pawn_promote_figures(side, to);
+        },
+    );
+
+    if let Some(en_passant_index) = side.current().en_passant_index {
+        search_en_passant(side, en_passant_index);
+    }
+}
+
+fn search_pawn_promote_figures(side: &mut impl Side, to: u8) {
+    side.next_we().queens.set(to);
+    side.search();
+    side.next_we().queens = side.current_we().queens;
+
+    side.next_we().rooks.set(to);
+    side.search();
+    side.next_we().rooks = side.current_we().rooks;
+
+    side.next_we().knights.set(to);
+    side.search();
+    side.next_we().knights = side.current_we().knights;
+
+    side.next_we().bishops.set(to);
+    side.search();
+    side.next_we().bishops = side.current_we().bishops;
+}
+
+fn search_en_passant_single(
+    side: &mut impl Side,
+    captured: u8,
+    from: u8,
+    to: u8,
+) {
+    side.next_enemy().captured(captured);
+    side.next_we().pawns.mov(from, to);
+    side.search();
+    side.next_we().pawns = side.current_we().pawns;
+    *side.next_enemy() = *side.current_enemy();
+}
+
+fn search_en_passant<S: Side>(side: &mut S, en_passant_index: u8) {
+    let (x, y) = index_to_position(en_passant_index);
+    let next_y = ((y as i8) + S::color().direction()) as u8;
+
+    if side.current_we().has_en_passant_left(side.current_enemy(), en_passant_index) {
+        search_en_passant_single(
+            side,
+            en_passant_index,
+            position_to_index(x-1, y),
+            position_to_index(x, next_y),
+        );
+    }
+
+    if side.current_we().has_en_passant_right(side.current_enemy(), en_passant_index) {
+        search_en_passant_single(
+            side,
+            en_passant_index,
+            position_to_index(x+1, y),
+            position_to_index(x, next_y),
+        );
     }
 }
