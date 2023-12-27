@@ -313,11 +313,11 @@ impl Game {
     }
 
     fn en_passant_left_move<S: Side>(side: &mut S) -> Option<Move> {
-        let Some(en_passant_index) = side.current().en_passant_index else {
+        let Some(en_passant_index) = side.board().en_passant_index else {
             return None;
         };
 
-        if side.current_we().has_en_passant_left(side.current_enemy(), en_passant_index) {
+        if side.we().has_en_passant_left(side.enemy(), en_passant_index) {
             S::color().en_passant_left(en_passant_index)
         } else {
             None
@@ -325,11 +325,11 @@ impl Game {
     }
 
     fn en_passant_right_move<S: Side>(side: &mut S) -> Option<Move> {
-        let Some(en_passant_index) = side.current().en_passant_index else {
+        let Some(en_passant_index) = side.board().en_passant_index else {
             return None;
         };
 
-        if side.current_we().has_en_passant_right(side.current_enemy(), en_passant_index) {
+        if side.we().has_en_passant_right(side.enemy(), en_passant_index) {
             S::color().en_passant_right(en_passant_index)
         } else {
             None
@@ -359,7 +359,9 @@ impl Game {
     }
 
     fn iter_moves_without_non_en_passant_pawns<S: Side>(side: &mut S) -> impl Iterator<Item = Move> {
-        Moves::iter_without_pawns_castle(side.current_we(), side.current_enemy())
+        // TODO: clone
+        let mut enemy = side.enemy().clone();
+        Moves::iter_without_pawns_castle(side.we(), &mut enemy)
             .chain(Self::en_passant_left_move(side).into_iter())
             .chain(Self::en_passant_right_move(side).into_iter())
             .chain(Self::castle_right_move(side).into_iter())
@@ -367,7 +369,9 @@ impl Game {
     }
 
     fn iter_white_moves_with_checks(side: &mut impl Side) -> impl Iterator<Item = Move> {
-        Moves::iter_white_pawns_without_en_passant(side.current_we(), side.current_enemy())
+        // TODO: clone
+        let mut enemy = side.enemy().clone();
+        Moves::iter_white_pawns_without_en_passant(side.we(), &mut enemy)
             .chain(Self::iter_moves_without_non_en_passant_pawns(side))
     }
 
@@ -380,7 +384,9 @@ impl Game {
     }
 
     fn iter_black_moves_with_checks(side: &mut impl Side) -> impl Iterator<Item = Move> {
-        Moves::iter_black_pawns_without_en_passant(side.current_we(), side.current_enemy())
+        // TODO: clone
+        let mut enemy = side.enemy().clone();
+        Moves::iter_black_pawns_without_en_passant(side.we(), &mut enemy)
             .chain(Self::iter_moves_without_non_en_passant_pawns(side))
     }
 
@@ -395,14 +401,14 @@ impl Game {
     fn apply_move(&mut self, mov: Move) -> Result<()> {
         let is_legal = match self.next_move_color {
             Color::White => {
-                let mut side = WhiteSide::new(&self.board, 0);
+                let mut side = WhiteSide::new(&mut self.board, 0);
                 // Need extra assignment to make the compiler happy
                 let is_legal = self.iter_white_games_moves(&mut side)
                     .any(|(legal_move, _)| legal_move == mov);
                 is_legal
             },
             Color::Black => {
-                let mut side = BlackSide::new(&self.board, 0);
+                let mut side = BlackSide::new(&mut self.board, 0);
                 // Need extra assignment to make the compiler happy
                 let is_legal = self.iter_black_games_moves(&mut side)
                     .any(|(legal_move, _)| legal_move == mov);
@@ -421,15 +427,15 @@ impl Game {
     fn apply_move_unchecked(&mut self, mov: Move) -> bool {
         self.board.en_passant_index = match self.next_move_color {
             Color::White => {
-                let mut side = WhiteSide::new(&self.board, 0);
+                let mut side = WhiteSide::new(&mut self.board, 0);
                 let en_passant_index = Self::apply_move_side_unchecked(&mut side, mov);
-                self.board = side.next().clone();
+                self.board = side.board().clone();
                 en_passant_index
             },
             Color::Black => {
-                let mut side = BlackSide::new(&self.board, 0);
+                let mut side = BlackSide::new(&mut self.board, 0);
                 let en_passant_index = Self::apply_move_side_unchecked(&mut side, mov);
-                self.board = side.next().clone();
+                self.board = side.board().clone();
                 en_passant_index
             },
         };
@@ -453,16 +459,16 @@ impl Game {
     }
 
     fn apply_move_normal(side: &mut impl Side, from: u8, to: u8) -> Option<u8> {
-        assert!(side.current_we().bitset().has(from));
+        assert!(side.we().bitset().has(from));
         if Self::apply_move_en_passant(side, from, to) {
             None
         } else if Self::apply_move_castle(side, from, to) {
             None
         } else {
-            let piece = side.current_we().which_piece(from).unwrap();
-            side.next_we().remove_piece(piece, from);
-            side.next_enemy().captured(to);
-            side.next_we().place_piece(piece, to);
+            let piece = side.we().which_piece(from).unwrap();
+            side.we().remove_piece(piece, from);
+            side.enemy().captured(to);
+            side.we().place_piece(piece, to);
 
             Self::disable_castle(side, from, to);
             Self::possible_en_passant(piece, from, to)
@@ -470,18 +476,18 @@ impl Game {
     }
 
     fn apply_move_en_passant<S: Side>(side: &mut S, from: u8, to: u8) -> bool {
-        let Some(en_passant_index) = side.current().en_passant_index else {
+        let Some(en_passant_index) = side.board().en_passant_index else {
             return false;
         };
-        if !side.current_we().pawns.has(from) {
+        if !side.we().pawns.has(from) {
             return false;
         }
         let mov = Move::Normal { from, to };
         let is_en_passant = if Some(mov) == S::color().en_passant_left(en_passant_index) {
-            assert!(side.current_we().has_en_passant_left(side.current_enemy(), en_passant_index));
+            assert!(side.we().has_en_passant_left(side.enemy(), en_passant_index));
             true
         } else if Some(mov) == S::color().en_passant_right(en_passant_index) {
-            assert!(side.current_we().has_en_passant_right(side.current_enemy(), en_passant_index));
+            assert!(side.we().has_en_passant_right(side.enemy(), en_passant_index));
             true
         } else {
             false
@@ -489,31 +495,31 @@ impl Game {
         if !is_en_passant {
             return false;
         }
-        side.next_we().pawns.mov(from, to);
-        side.next_enemy().pawns.checked_clear(en_passant_index);
+        side.we().pawns.mov(from, to);
+        side.enemy().pawns.checked_clear(en_passant_index);
         true
     }
 
     fn disable_castle<S: Side>(side: &mut S, from: u8, to: u8) {
         if from == S::color().king_starting_index() || to == S::color().king_starting_index() {
-            side.next_we().disable_castle();
+            side.we().disable_castle();
         } else if from == S::color().rook_left_starting_index() || to == S::color().rook_left_starting_index() {
-            side.next_we().disable_castle_left();
+            side.we().disable_castle_left();
         } else if from == S::color().rook_right_starting_index() || to == S::color().rook_right_starting_index() {
-            side.next_we().disable_castle_right();
+            side.we().disable_castle_right();
         }
     }
 
     fn apply_move_castle<S: Side>(side: &mut S, from: u8, to: u8) -> bool {
-        if from != S::color().king_starting_index() || !side.current_we().can_castle_any() {
+        if from != S::color().king_starting_index() || !side.we().can_castle_any() {
             return false;
         }
         if to == from-2 {
-            assert!(side.current_we().can_castle_left());
+            assert!(side.we().can_castle_left());
             castle_left_apply(side);
             true
         } else if to == from+2 {
-            assert!(side.current_we().can_castle_right());
+            assert!(side.we().can_castle_right());
             castle_right_apply(side);
             true
         } else {
@@ -522,10 +528,10 @@ impl Game {
     }
 
     fn apply_move_promotion(side: &mut impl Side, piece: Piece, from: u8, to: u8) {
-        assert!(side.current_we().pawns.has(from));
-        side.next_we().pawns.checked_clear(from);
-        side.next_enemy().captured(to);
-        side.next_we().place_piece(piece, to);
+        assert!(side.we().pawns.has(from));
+        side.we().pawns.checked_clear(from);
+        side.enemy().captured(to);
+        side.we().place_piece(piece, to);
     }
 
     fn possible_en_passant(piece: Piece, from: u8, to: u8) -> Option<u8> {
@@ -544,13 +550,15 @@ impl Game {
     fn best_move(&self) -> Result<Move> {
         let result = match self.next_move_color {
             Color::White => {
-                let mut side = WhiteSide::new(&self.board, 0);
+                let mut board = self.board.clone();
+                let mut side = WhiteSide::new(&mut board, 0);
                 self.iter_white_games_moves(&mut side)
                     .map(|(mov, game)| (mov, search_black(&game.board)))
                     .max_by(|(_, a), (_, b)| a.cmp_white(&b))
             },
             Color::Black => {
-                let mut side = BlackSide::new(&self.board, 0);
+                let mut board = self.board.clone();
+                let mut side = BlackSide::new(&mut board, 0);
                 self.iter_black_games_moves(&mut side)
                     .map(|(mov, game)| (mov, search_white(&game.board)))
                     .max_by(|(_, a), (_, b)| a.cmp_black(&b))
@@ -579,9 +587,14 @@ struct PlayerBoard {
     queens: Bitset,
     king: Bitset,
 
+    can_castle: CanCastle,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct CanCastle {
     // TODO: bitflags
-    can_castle_left: bool,
-    can_castle_right: bool,
+    left: bool,
+    right: bool,
 }
 
 impl PlayerBoard {
@@ -703,29 +716,29 @@ impl PlayerBoard {
     }
 
     fn can_castle_left(&self) -> bool {
-        self.can_castle_left
+        self.can_castle.left
     }
 
     fn can_castle_right(&self) -> bool {
-        self.can_castle_right
+        self.can_castle.right
     }
 
     fn disable_castle(&mut self) {
-        self.can_castle_left = false;
-        self.can_castle_right = false;
+        self.can_castle.left = false;
+        self.can_castle.right = false;
     }
 
     fn disable_castle_left(&mut self) {
-        self.can_castle_left = false;
+        self.can_castle.left = false;
     }
 
     fn disable_castle_right(&mut self) {
-        self.can_castle_right = false;
+        self.can_castle.right = false;
     }
 
-    fn reset_castle(&mut self, old: &Self) {
-        self.can_castle_left = old.can_castle_left;
-        self.can_castle_right = old.can_castle_right;
+    fn reset_castle(&mut self, old: CanCastle) {
+        self.can_castle.left = old.left;
+        self.can_castle.right = old.right;
     }
 }
 
@@ -1276,8 +1289,10 @@ impl Board {
                 queens: Bitset::from_position(3, 0),
                 king: Bitset::from_index(BLACK_KING_STARTING_INDEX),
                 pawns: black_pawns,
-                can_castle_left: true,
-                can_castle_right: true,
+                can_castle: CanCastle {
+                    left: true,
+                    right: true,
+                },
             },
             white: PlayerBoard {
                 rooks: Bitset::from_index(WHITE_ROOK_LEFT_STARTING_INDEX) | Bitset::from_index(WHITE_ROOK_RIGHT_STARTING_INDEX),
@@ -1286,8 +1301,10 @@ impl Board {
                 queens: Bitset::from_position(3, 7),
                 king: Bitset::from_index(WHITE_KING_STARTING_INDEX),
                 pawns: white_pawns,
-                can_castle_left: true,
-                can_castle_right: true,
+                can_castle: CanCastle {
+                    left: true,
+                    right: true,
+                },
             },
             en_passant_index: None,
         };
@@ -1599,13 +1616,9 @@ trait Side {
 
     fn search(&mut self);
 
-    fn current(&self) -> &Board;
-    fn current_we(&self) -> &PlayerBoard;
-    fn current_enemy(&self) -> &PlayerBoard;
-
-    fn next(&mut self) -> &mut Board;
-    fn next_we(&mut self) -> &mut PlayerBoard;
-    fn next_enemy(&mut self) -> &mut PlayerBoard;
+    fn board(&mut self) -> &mut Board;
+    fn we(&mut self) -> &mut PlayerBoard;
+    fn enemy(&mut self) -> &mut PlayerBoard;
 
     fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
     fn pawn_double(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
@@ -1614,63 +1627,49 @@ trait Side {
     fn all_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Moves;
 }
 
-struct WhiteSide {
-    current: Board,
-    next: Board,
+struct WhiteSide<'a> {
+    board: &'a mut Board,
     score: Score,
     depth: usize,
 }
 
-impl WhiteSide {
-    fn new(board: &Board, depth: usize) -> Self {
+impl <'a> WhiteSide<'a> {
+    fn new(board: &'a mut Board, depth: usize) -> Self {
         Self {
-            current: board.clone(),
-            next: board.clone(),
+            board,
             score: Score::zero(),
             depth,
         }
     }
 }
 
-impl Side for WhiteSide {
+impl <'a> Side for WhiteSide<'a> {
     fn color() -> Color {
         Color::White
     }
 
     fn search(&mut self) {
-        if self.next.black.king.is_empty() {
+        if self.board.black.king.is_empty() {
             self.score.update_white(Score::checkmate_black());
         } else if self.depth == 0 {
-            self.score.update_white(Score::board(self.current()));
+            self.score.update_white(Score::board(&self.board));
         } else {
-            let mut other = BlackSide::new(&self.next, self.depth - 1);
+            let mut other = BlackSide::new(self.board, self.depth - 1);
             search(&mut other);
             self.score.update_white(other.score);
         }
     }
 
-    fn current(&self) -> &Board {
-        &self.current
+    fn board(&mut self) -> &mut Board {
+        self.board
     }
 
-    fn current_we(&self) -> &PlayerBoard {
-        &self.current.white
+    fn we(&mut self) -> &mut PlayerBoard {
+        &mut self.board.white
     }
 
-    fn current_enemy(&self) -> &PlayerBoard {
-        &self.current.black
-    }
-
-    fn next(&mut self) -> &mut Board {
-        &mut self.next
-    }
-
-    fn next_we(&mut self) -> &mut PlayerBoard {
-        &mut self.next.white
-    }
-
-    fn next_enemy(&mut self) -> &mut PlayerBoard {
-        &mut self.next.black
+    fn enemy(&mut self) -> &mut PlayerBoard {
+        &mut self.board.black
     }
 
     fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
@@ -1690,63 +1689,49 @@ impl Side for WhiteSide {
     }
 }
 
-struct BlackSide {
-    current: Board,
-    next: Board,
+struct BlackSide<'a> {
+    board: &'a mut Board,
     score: Score,
     depth: usize,
 }
 
-impl BlackSide {
-    fn new(board: &Board, depth: usize) -> Self {
+impl <'a> BlackSide<'a> {
+    fn new(board: &'a mut Board, depth: usize) -> Self {
         Self {
-            current: board.clone(),
-            next: board.clone(),
+            board,
             score: Score::zero(),
             depth,
         }
     }
 }
 
-impl Side for BlackSide {
+impl <'a> Side for BlackSide<'a> {
     fn color() -> Color {
         Color::Black
     }
 
     fn search(&mut self) {
-        if self.next.white.king.is_empty() {
+        if self.board.white.king.is_empty() {
             self.score.update_black(Score::checkmate_white());
         } else if self.depth == 0 {
-            self.score.update_black(Score::board(self.current()));
+            self.score.update_black(Score::board(self.board));
         } else {
-            let mut other = WhiteSide::new(&self.next, self.depth - 1);
+            let mut other = WhiteSide::new(self.board, self.depth - 1);
             search(&mut other);
             self.score.update_black(other.score);
         }
     }
 
-    fn current(&self) -> &Board {
-        &self.current
+    fn board(&mut self) -> &mut Board {
+        self.board
     }
 
-    fn current_we(&self) -> &PlayerBoard {
-        &self.current.black
+    fn we(&mut self) -> &mut PlayerBoard {
+        &mut self.board.black
     }
 
-    fn current_enemy(&self) -> &PlayerBoard {
-        &self.current.white
-    }
-
-    fn next(&mut self) -> &mut Board {
-        &mut self.next
-    }
-
-    fn next_we(&mut self) -> &mut PlayerBoard {
-        &mut self.next.black
-    }
-
-    fn next_enemy(&mut self) -> &mut PlayerBoard {
-        &mut self.next.white
+    fn enemy(&mut self) -> &mut PlayerBoard {
+        &mut self.board.white
     }
 
     fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
@@ -1767,136 +1752,143 @@ impl Side for BlackSide {
 }
 
 fn castle_left_apply<S: Side>(side: &mut S) {
-    side.next_we().king.mov(
+    side.we().king.mov(
         S::color().king_starting_index(),
         S::color().king_starting_index() - 2,
     );
-    side.next_we().rooks.mov(
+    side.we().rooks.mov(
         S::color().rook_left_starting_index(),
         position_to_index(3, S::color().first_row(),
     ));
-    side.next_we().disable_castle();
+    side.we().disable_castle();
 }
 
 fn castle_right_apply<S: Side>(side: &mut S) {
-    side.next_we().king.mov(
+    side.we().king.mov(
         S::color().king_starting_index(),
         S::color().king_starting_index() + 2,
     );
-    side.next_we().rooks.mov(
+    side.we().rooks.mov(
         S::color().rook_right_starting_index(),
         position_to_index(5, S::color().first_row(),
     ));
-    side.next_we().disable_castle();
+    side.we().disable_castle();
 }
 
 fn search_white(board: &Board) -> Score {
-    let mut side = WhiteSide::new(board, DEFAULT_DEPTH);
+    let mut board = board.clone();
+    let mut side = WhiteSide::new(&mut board, DEFAULT_DEPTH);
     search(&mut side);
     side.score
 }
 
 fn search_black(board: &Board) -> Score {
-    let mut side = BlackSide::new(board, DEFAULT_DEPTH);
+    let mut board = board.clone();
+    let mut side = BlackSide::new(&mut board, DEFAULT_DEPTH);
     search(&mut side);
     side.score
 }
 
 fn apply_moves_with<S: Side>(
     side: &mut S,
-    get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
-    get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
+    old_enemy: &PlayerBoard,
+    get_piece_bitset: impl Fn(&mut PlayerBoard) -> &mut Bitset,
     get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
     next: impl Fn(&mut S, u8, u8),
 ) {
-    let enemy_pieces = side.current_enemy().bitset();
-    let all_pieces = enemy_pieces | side.current_we().bitset();
+    let enemy_pieces = side.enemy().bitset();
+    let all_pieces = enemy_pieces | side.we().bitset();
 
-    for from in get_piece_bitset(side.current_we()).indices() {
+    let we_old_selected_piece = *get_piece_bitset(side.we());
+    for from in get_piece_bitset(side.we()).indices() {
         let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
         for to in moves.indices() {
-            get_piece_bitset_mut(side.next_we()).mov(from, to);
+            get_piece_bitset(side.we()).mov(from, to);
             next(side, from, to);
-            *get_piece_bitset_mut(side.next_we()) = *get_piece_bitset(side.current_we());
+            *get_piece_bitset(side.we()) = we_old_selected_piece;
         }
         for to in captures.indices() {
-            side.next_enemy().captured(to);
-            get_piece_bitset_mut(side.next_we()).mov(from, to);
+            side.enemy().captured(to);
+            get_piece_bitset(side.we()).mov(from, to);
             next(side, from, to);
-            *get_piece_bitset_mut(side.next_we()) = *get_piece_bitset(side.current_we());
-            *side.next_enemy() = *side.current_enemy();
+            *get_piece_bitset(side.we()) = we_old_selected_piece;
+            *side.enemy() = *old_enemy;
         }
     }
 }
 
 fn apply_moves<S: Side>(
     side: &mut S,
-    get_piece_bitset: impl Fn(&PlayerBoard) -> &Bitset,
-    get_piece_bitset_mut: impl Fn(&mut PlayerBoard) -> &mut Bitset,
+    old_enemy: &PlayerBoard,
+    get_piece_bitset: impl Fn(&mut PlayerBoard) -> &mut Bitset,
     get_moves: impl Fn(Bitset, u8, Bitset) -> Moves,
 ) {
     apply_moves_with(
         side,
+        old_enemy,
         get_piece_bitset,
-        get_piece_bitset_mut,
         get_moves,
         |side, _, _| side.search(),
     );
 }
 
 fn search(side: &mut impl Side) {
-    side.current().debug_check();
-    side.next().en_passant_index = None;
+    side.board().debug_check();
+    let old_enemy = side.enemy().clone();
+    let en_passant_index = side.board().en_passant_index;
+    side.board().en_passant_index = None;
 
-    search_pawns(side);
-    search_queens(side);
-    search_rooks(side);
-    search_bishops(side);
-    search_knights(side);
-    search_king(side);
+    search_pawns(side, &old_enemy, en_passant_index);
+    search_queens(side, &old_enemy);
+    search_rooks(side, &old_enemy);
+    search_bishops(side, &old_enemy);
+    search_knights(side, &old_enemy);
+    search_king(side, &old_enemy);
     search_castle(side);
+
+    side.board().en_passant_index = en_passant_index;
 }
 
-fn search_king(side: &mut impl Side) {
+fn search_king(side: &mut impl Side, old_enemy: &PlayerBoard) {
     apply_moves(
         side,
-        |player_board| &player_board.king,
+        old_enemy,
         |player_board| &mut player_board.king,
         Moves::king,
     );
 }
 
-fn search_knights(side: &mut impl Side) {
+fn search_knights(side: &mut impl Side, old_enemy: &PlayerBoard) {
     apply_moves(
         side,
-        |player_board| &player_board.knights,
+        old_enemy,
         |player_board| &mut player_board.knights,
         Moves::knight,
     );
 }
 
-fn search_bishops(side: &mut impl Side) {
+fn search_bishops(side: &mut impl Side, old_enemy: &PlayerBoard) {
     apply_moves(
         side,
-        |player_board| &player_board.bishops,
+        old_enemy,
         |player_board| &mut player_board.bishops,
         Moves::bishop,
     );
 }
 
-fn search_rooks(side: &mut impl Side) {
+fn search_rooks(side: &mut impl Side, old_enemy: &PlayerBoard) {
     apply_moves(
         side,
-        |player_board| &player_board.rooks,
+        old_enemy,
         |player_board| &mut player_board.rooks,
         Moves::rook,
     );
 }
 
-fn search_queens(side: &mut impl Side) {
+fn search_queens(side: &mut impl Side, old_enemy: &PlayerBoard) {
     apply_moves(
         side,
-        |player_board| &player_board.queens,
+        old_enemy,
         |player_board| &mut player_board.queens,
         Moves::queen,
     );
@@ -1912,15 +1904,15 @@ fn search_castle(side: &mut impl Side) {
 }
 
 fn can_castle_right<S: Side>(side: &mut S) -> bool {
-    let all_pieces = side.current().bitset();
-    let king_index = side.current_we().king.first_index();
+    let all_pieces = side.board().bitset();
+    let king_index = side.we().king.first_index();
 
     let king_starting_index = S::color().king_starting_index();
     let row = S::color().first_row();
 
     let allowed = king_index == king_starting_index
-        && side.current_we().can_castle_right()
-        && side.current_we().rooks.has(S::color().rook_right_starting_index())
+        && side.we().can_castle_right()
+        && side.we().rooks.has(S::color().rook_right_starting_index())
         && !all_pieces.has(position_to_index(5, row))
         && !all_pieces.has(position_to_index(6, row));
     if !allowed {
@@ -1928,11 +1920,12 @@ fn can_castle_right<S: Side>(side: &mut S) -> bool {
     }
 
     // TODO: clone
-    let current_we = side.current_we().clone();
+    let we = side.we().clone();
+    let we_old_king = side.we().king;
     for shift in 0..=2 {
-        side.next_we().king.mov(king_starting_index, king_starting_index+shift);
-        let check = side.next_enemy().has_check(&current_we, S::color().other());
-        side.next_we().king = side.current_we().king;
+        side.we().king.mov(king_starting_index, king_starting_index+shift);
+        let check = side.enemy().has_check(&we, S::color().other());
+        side.we().king = we_old_king;
         if check {
             return false;
         }
@@ -1941,15 +1934,15 @@ fn can_castle_right<S: Side>(side: &mut S) -> bool {
 }
 
 fn can_castle_left<S: Side>(side: &mut S) -> bool {
-    let all_pieces = side.current().bitset();
-    let king_index = side.current_we().king.first_index();
+    let all_pieces = side.we().bitset();
+    let king_index = side.we().king.first_index();
 
     let king_starting_index = S::color().king_starting_index();
     let row = S::color().first_row();
 
     let allowed = king_index == king_starting_index
-        && side.current_we().can_castle_left()
-        && side.current_we().rooks.has(S::color().rook_left_starting_index())
+        && side.we().can_castle_left()
+        && side.we().rooks.has(S::color().rook_left_starting_index())
         && !all_pieces.has(position_to_index(3, row))
         && !all_pieces.has(position_to_index(2, row))
         && !all_pieces.has(position_to_index(1, row));
@@ -1958,11 +1951,12 @@ fn can_castle_left<S: Side>(side: &mut S) -> bool {
     }
 
     // TODO: clone
-    let current_we = side.current_we().clone();
+    let we = side.we().clone();
+    let we_old_king = side.we().king;
     for shift in 0..=2 {
-        side.next_we().king.mov(king_starting_index, king_starting_index-shift);
-        let check = side.next_enemy().has_check(&current_we, S::color().other());
-        side.next_we().king = side.current_we().king;
+        side.we().king.mov(king_starting_index, king_starting_index-shift);
+        let check = side.enemy().has_check(&we, S::color().other());
+        side.we().king = we_old_king;
         if check {
             return false;
         }
@@ -1970,109 +1964,121 @@ fn can_castle_left<S: Side>(side: &mut S) -> bool {
     true
 }
 
-fn search_castle_reset(side: &mut impl Side) {
-    // TODO: clone
-    let current_we = side.current_we().clone();
-    side.next_we().reset_castle(&current_we);
-    side.next_we().rooks = side.current_we().rooks;
-    side.next_we().king = side.current_we().king;
+fn search_castle_reset(
+    side: &mut impl Side,
+    old_can_castle: CanCastle,
+    we_old_king: Bitset,
+    we_old_rooks: Bitset,
+) {
+    side.we().reset_castle(old_can_castle);
+    side.we().king = we_old_king;
+    side.we().rooks = we_old_rooks;
 }
 
 fn search_castle_right<S: Side>(side: &mut S) {
+    let old_can_castle = side.we().can_castle;
+    let we_old_king = side.we().king;
+    let we_old_rooks = side.we().rooks;
     castle_right_apply(side);
     side.search();
-    search_castle_reset(side);
+    search_castle_reset(side, old_can_castle, we_old_king, we_old_rooks);
 }
 
 fn search_castle_left<S: Side>(side: &mut S) {
+    let old_can_castle = side.we().can_castle;
+    let we_old_king = side.we().king;
+    let we_old_rooks = side.we().rooks;
     castle_left_apply(side);
     side.search();
-    search_castle_reset(side);
+    search_castle_reset(side, old_can_castle, we_old_king, we_old_rooks);
 }
 
-fn search_pawns<S: Side>(side: &mut S) {
+fn search_pawns<S: Side>(side: &mut S, old_enemy: &PlayerBoard, en_passant_index: Option<u8>) {
     apply_moves(
         side,
-        |player_board| &player_board.pawns,
+        old_enemy,
         |player_board| &mut player_board.pawns,
         S::pawn_normal_single_without_en_passant,
     );
 
     apply_moves_with(
         side,
-        |player_board| &player_board.pawns,
+        old_enemy,
         |player_board| &mut player_board.pawns,
         S::pawn_double,
         |side, _, to| {
-            side.next().en_passant_index = Some(to);
+            side.board().en_passant_index = Some(to);
             side.search();
-            side.next().en_passant_index = None;
+            side.board().en_passant_index = None;
         },
     );
 
     apply_moves_with(
         side,
-        |player_board| &player_board.pawns,
+        old_enemy,
         |player_board| &mut player_board.pawns,
         S::pawn_promotion,
         |side, _, to| {
-            side.next_we().pawns.clear(to);
+            side.we().pawns.clear(to);
             search_pawn_promote_figures(side, to);
         },
     );
 
-    if let Some(en_passant_index) = side.current().en_passant_index {
-        search_en_passant(side, en_passant_index);
+    if let Some(en_passant_index) = en_passant_index {
+        search_en_passant(side, old_enemy, en_passant_index);
     }
 }
 
 fn search_pawn_promote_figures(side: &mut impl Side, to: u8) {
-    side.next_we().queens.set(to);
+    side.we().queens.set(to);
     side.search();
-    side.next_we().queens = side.current_we().queens;
+    side.we().queens.clear(to);
 
-    side.next_we().rooks.set(to);
+    side.we().rooks.set(to);
     side.search();
-    side.next_we().rooks = side.current_we().rooks;
+    side.we().rooks.clear(to);
 
-    side.next_we().knights.set(to);
+    side.we().knights.set(to);
     side.search();
-    side.next_we().knights = side.current_we().knights;
+    side.we().knights.clear(to);
 
-    side.next_we().bishops.set(to);
+    side.we().bishops.set(to);
     side.search();
-    side.next_we().bishops = side.current_we().bishops;
+    side.we().bishops.clear(to);
 }
 
 fn search_en_passant_single(
     side: &mut impl Side,
+    old_enemy: &PlayerBoard,
     captured: u8,
     from: u8,
     to: u8,
 ) {
-    side.next_enemy().captured(captured);
-    side.next_we().pawns.mov(from, to);
+    side.enemy().captured(captured);
+    side.we().pawns.mov(from, to);
     side.search();
-    side.next_we().pawns = side.current_we().pawns;
-    *side.next_enemy() = *side.current_enemy();
+    side.we().pawns.mov(to, from);
+    *side.enemy() = *old_enemy;
 }
 
-fn search_en_passant<S: Side>(side: &mut S, en_passant_index: u8) {
+fn search_en_passant<S: Side>(side: &mut S, old_enemy: &PlayerBoard, en_passant_index: u8) {
     let (x, y) = index_to_position(en_passant_index);
     let next_y = ((y as i8) + S::color().direction()) as u8;
 
-    if side.current_we().has_en_passant_left(side.current_enemy(), en_passant_index) {
+    if side.we().has_en_passant_left(side.enemy(), en_passant_index) {
         search_en_passant_single(
             side,
+            old_enemy,
             en_passant_index,
             position_to_index(x-1, y),
             position_to_index(x, next_y),
         );
     }
 
-    if side.current_we().has_en_passant_right(side.current_enemy(), en_passant_index) {
+    if side.we().has_en_passant_right(side.enemy(), en_passant_index) {
         search_en_passant_single(
             side,
+            old_enemy,
             en_passant_index,
             position_to_index(x+1, y),
             position_to_index(x, next_y),
@@ -2142,7 +2148,7 @@ mod tests {
         unsafe { init() };
 
         let mut game = Game::new();
-        let mut white_side = WhiteSide::new(&game.board, 0);
+        let mut white_side = WhiteSide::new(&mut game.board, 0);
         let white_moves: Vec<_> = game.iter_white_games_moves(&mut white_side)
             .map(|(mov, _)| mov)
             .collect();
@@ -2153,7 +2159,7 @@ mod tests {
         assert_eq!(white_moves.len(), 20);
 
         game.next_move_color = game.next_move_color.other();
-        let mut black_side = BlackSide::new(&game.board, 0);
+        let mut black_side = BlackSide::new(&mut game.board, 0);
         let black_moves: Vec<_> = game.iter_black_games_moves(&mut black_side)
             .map(|(mov, _)| mov)
             .collect();
