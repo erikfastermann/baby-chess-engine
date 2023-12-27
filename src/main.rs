@@ -1002,52 +1002,76 @@ impl Moves {
             .combine(&Self::rook(all_pieces, index, enemy_pieces))
     }
 
-    fn white_pawn_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+    fn white_pawn_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
         let pawn = Bitset::from_index(index);
+        let forward = pawn >> 8;
+        let moves = forward & !all_pieces;
         let captures = {
-            let forward = pawn >> 8;
             let a = (forward & !COLUMN_0) >> 1;
             let b = (forward & !COLUMN_7) << 1;
             (a | b) & enemy_pieces
         };
-        let moves = {
-            let single = (pawn >> 8) & !all_pieces;
-            let double = ((((pawn & ROW_6) >> 8) & !all_pieces) >> 8) & !all_pieces;
-            single | double
-        };
         Self { moves, captures }
+    }
+
+    fn white_pawn_double(all_pieces: Bitset, index: u8, _: Bitset) -> Self {
+        let pawn = Bitset::from_index(index);
+        let double: Bitset = ((((pawn & ROW_6) >> 8) & !all_pieces) >> 8) & !all_pieces;
+        Self { moves: double, captures: Bitset::zero() }
+    }
+
+    fn white_pawn_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        Self::white_pawn_single_without_en_passant(all_pieces, index, enemy_pieces)
+            .combine(&Self::white_pawn_double(all_pieces, index, enemy_pieces))
+    }
+
+    fn white_pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        Self::white_pawn_single_without_en_passant(all_pieces, index, enemy_pieces).and(!ROW_0)
     }
 
     fn white_pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        Self::white_pawn_without_en_passant(all_pieces, index, enemy_pieces).and(!ROW_0)
+        Self::white_pawn_normal_single_without_en_passant(all_pieces, index, enemy_pieces)
+            .combine(&Self::white_pawn_double(all_pieces, index, enemy_pieces))
     }
 
-    fn white_pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        Self::white_pawn_without_en_passant(all_pieces, index, enemy_pieces).and(ROW_0)
+    fn white_pawn_promotion(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        Self::white_pawn_single_without_en_passant(all_pieces, index, enemy_pieces).and(ROW_0)
     }
 
-    fn black_pawn_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+    fn black_pawn_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
         let pawn = Bitset::from_index(index);
+        let forward = pawn << 8;
+        let moves = forward & !all_pieces;
         let captures = {
-            let forward = pawn << 8;
             let a = (forward & !COLUMN_0) >> 1;
             let b = (forward & !COLUMN_7) << 1;
             (a | b) & enemy_pieces
         };
-        let moves = {
-            let single = (pawn << 8) & !all_pieces;
-            let double = ((((pawn & ROW_1) << 8) & !all_pieces) << 8) & !all_pieces;
-            single | double
-        };
         Self { moves, captures }
     }
 
-    fn black_pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        Self::black_pawn_without_en_passant(all_pieces, index, enemy_pieces).and(!ROW_7)
+    fn black_pawn_double(all_pieces: Bitset, index: u8, _: Bitset) -> Self {
+        let pawn = Bitset::from_index(index);
+        let double = ((((pawn & ROW_1) << 8) & !all_pieces) << 8) & !all_pieces;
+        Self { moves: double, captures: Bitset::zero() }
     }
 
-    fn black_pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        Self::black_pawn_without_en_passant(all_pieces, index, enemy_pieces).and(ROW_7)
+    fn black_pawn_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        Self::black_pawn_single_without_en_passant(all_pieces, index, enemy_pieces)
+            .combine(&Self::black_pawn_double(all_pieces, index, enemy_pieces))
+    }
+
+    fn black_pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        Self::black_pawn_single_without_en_passant(all_pieces, index, enemy_pieces).and(!ROW_7)
+    }
+
+    fn black_pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        Self::black_pawn_normal_single_without_en_passant(all_pieces, index, enemy_pieces)
+            .combine(&Self::black_pawn_double(all_pieces, index, enemy_pieces))
+    }
+
+    fn black_pawn_promotion(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
+        Self::black_pawn_single_without_en_passant(all_pieces, index, enemy_pieces).and(ROW_7)
     }
 
     fn king(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
@@ -1126,7 +1150,7 @@ impl Moves {
             we,
             enemy,
             Moves::white_pawn_normal_without_en_passant,
-            Moves::white_pawn_promotion_without_en_passant,
+            Moves::white_pawn_promotion,
         )
     }
 
@@ -1135,7 +1159,7 @@ impl Moves {
             we,
             enemy,
             Moves::black_pawn_normal_without_en_passant,
-            Moves::black_pawn_promotion_without_en_passant,
+            Moves::black_pawn_promotion,
         )
     }
 
@@ -1583,8 +1607,9 @@ trait Side {
     fn next_we(&mut self) -> &mut PlayerBoard;
     fn next_enemy(&mut self) -> &mut PlayerBoard;
 
-    fn pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
-    fn pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
+    fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
+    fn pawn_double(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
+    fn pawn_promotion(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
 
     fn all_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Moves;
 }
@@ -1648,12 +1673,16 @@ impl Side for WhiteSide {
         &mut self.next.black
     }
 
-    fn pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
-        Moves::white_pawn_normal_without_en_passant(all_pieces, index, enemy_pieces)
+    fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::white_pawn_normal_single_without_en_passant(all_pieces, index, enemy_pieces)
     }
 
-    fn pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
-        Moves::white_pawn_promotion_without_en_passant(all_pieces, index, enemy_pieces)
+    fn pawn_double(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::white_pawn_double(all_pieces, index, enemy_pieces)
+    }
+
+    fn pawn_promotion(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::white_pawn_promotion(all_pieces, index, enemy_pieces)
     }
 
     fn all_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Moves {
@@ -1720,12 +1749,16 @@ impl Side for BlackSide {
         &mut self.next.white
     }
 
-    fn pawn_normal_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
-        Moves::black_pawn_normal_without_en_passant(all_pieces, index, enemy_pieces)
+    fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::black_pawn_normal_single_without_en_passant(all_pieces, index, enemy_pieces)
     }
 
-    fn pawn_promotion_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
-        Moves::black_pawn_promotion_without_en_passant(all_pieces, index, enemy_pieces)
+    fn pawn_double(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::black_pawn_double(all_pieces, index, enemy_pieces)
+    }
+
+    fn pawn_promotion(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
+        Moves::black_pawn_promotion(all_pieces, index, enemy_pieces)
     }
 
     fn all_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Moves {
@@ -1958,20 +1991,30 @@ fn search_castle_left<S: Side>(side: &mut S) {
 }
 
 fn search_pawns<S: Side>(side: &mut S) {
-    // TODO: double step save en passant index
-
     apply_moves(
         side,
         |player_board| &player_board.pawns,
         |player_board| &mut player_board.pawns,
-        S::pawn_normal_without_en_passant,
+        S::pawn_normal_single_without_en_passant,
     );
 
     apply_moves_with(
         side,
         |player_board| &player_board.pawns,
         |player_board| &mut player_board.pawns,
-        S::pawn_promotion_without_en_passant,
+        S::pawn_double,
+        |side, _, to| {
+            side.next().en_passant_index = Some(to);
+            side.search();
+            side.next().en_passant_index = None;
+        },
+    );
+
+    apply_moves_with(
+        side,
+        |player_board| &player_board.pawns,
+        |player_board| &mut player_board.pawns,
+        S::pawn_promotion,
         |side, _, to| {
             side.next_we().pawns.clear(to);
             search_pawn_promote_figures(side, to);
