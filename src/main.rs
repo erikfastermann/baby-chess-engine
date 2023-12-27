@@ -317,7 +317,7 @@ impl Game {
             return None;
         };
 
-        if side.we().has_en_passant_left(side.enemy(), en_passant_index) {
+        if side.we_not_mut().has_en_passant_left(side.enemy_not_mut(), en_passant_index) {
             S::color().en_passant_left(en_passant_index)
         } else {
             None
@@ -329,7 +329,7 @@ impl Game {
             return None;
         };
 
-        if side.we().has_en_passant_right(side.enemy(), en_passant_index) {
+        if side.we_not_mut().has_en_passant_right(side.enemy_not_mut(), en_passant_index) {
             S::color().en_passant_right(en_passant_index)
         } else {
             None
@@ -358,10 +358,8 @@ impl Game {
         }
     }
 
-    fn iter_moves_without_non_en_passant_pawns<S: Side>(side: &mut S) -> impl Iterator<Item = Move> {
-        // TODO: clone
-        let mut enemy = side.enemy().clone();
-        Moves::iter_without_pawns_castle(side.we(), &mut enemy)
+    fn iter_moves_without_non_en_passant_pawns(side: &mut impl Side) -> impl Iterator<Item = Move> {
+        Moves::iter_without_pawns_castle(side.we_not_mut(), side.enemy_not_mut())
             .chain(Self::en_passant_left_move(side).into_iter())
             .chain(Self::en_passant_right_move(side).into_iter())
             .chain(Self::castle_right_move(side).into_iter())
@@ -369,9 +367,7 @@ impl Game {
     }
 
     fn iter_white_moves_with_checks(side: &mut impl Side) -> impl Iterator<Item = Move> {
-        // TODO: clone
-        let mut enemy = side.enemy().clone();
-        Moves::iter_white_pawns_without_en_passant(side.we(), &mut enemy)
+        Moves::iter_white_pawns_without_en_passant(side.we_not_mut(), side.enemy_not_mut())
             .chain(Self::iter_moves_without_non_en_passant_pawns(side))
     }
 
@@ -384,9 +380,7 @@ impl Game {
     }
 
     fn iter_black_moves_with_checks(side: &mut impl Side) -> impl Iterator<Item = Move> {
-        // TODO: clone
-        let mut enemy = side.enemy().clone();
-        Moves::iter_black_pawns_without_en_passant(side.we(), &mut enemy)
+        Moves::iter_black_pawns_without_en_passant(side.we_not_mut(), side.enemy_not_mut())
             .chain(Self::iter_moves_without_non_en_passant_pawns(side))
     }
 
@@ -401,14 +395,16 @@ impl Game {
     fn apply_move(&mut self, mov: Move) -> Result<()> {
         let is_legal = match self.next_move_color {
             Color::White => {
-                let mut side = WhiteSide::new(&mut self.board, 0);
+                let mut board = self.board.clone();
+                let mut side = WhiteSide::new(&mut board, 0);
                 // Need extra assignment to make the compiler happy
                 let is_legal = self.iter_white_games_moves(&mut side)
                     .any(|(legal_move, _)| legal_move == mov);
                 is_legal
             },
             Color::Black => {
-                let mut side = BlackSide::new(&mut self.board, 0);
+                let mut board = self.board.clone();
+                let mut side = BlackSide::new(&mut board, 0);
                 // Need extra assignment to make the compiler happy
                 let is_legal = self.iter_black_games_moves(&mut side)
                     .any(|(legal_move, _)| legal_move == mov);
@@ -484,10 +480,10 @@ impl Game {
         }
         let mov = Move::Normal { from, to };
         let is_en_passant = if Some(mov) == S::color().en_passant_left(en_passant_index) {
-            assert!(side.we().has_en_passant_left(side.enemy(), en_passant_index));
+            assert!(side.we_not_mut().has_en_passant_left(side.enemy_not_mut(), en_passant_index));
             true
         } else if Some(mov) == S::color().en_passant_right(en_passant_index) {
-            assert!(side.we().has_en_passant_right(side.enemy(), en_passant_index));
+            assert!(side.we_not_mut().has_en_passant_right(side.enemy_not_mut(), en_passant_index));
             true
         } else {
             false
@@ -1616,9 +1612,15 @@ trait Side {
 
     fn search(&mut self);
 
+    // TODO: reverse naming mut
+
     fn board(&mut self) -> &mut Board;
     fn we(&mut self) -> &mut PlayerBoard;
     fn enemy(&mut self) -> &mut PlayerBoard;
+
+    fn board_not_mut(&self) -> &Board;
+    fn we_not_mut(&self) -> &PlayerBoard;
+    fn enemy_not_mut(&self) -> &PlayerBoard;
 
     fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
     fn pawn_double(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
@@ -1670,6 +1672,18 @@ impl <'a> Side for WhiteSide<'a> {
 
     fn enemy(&mut self) -> &mut PlayerBoard {
         &mut self.board.black
+    }
+
+    fn board_not_mut(&self) -> &Board {
+        self.board
+    }
+
+    fn we_not_mut(&self) -> &PlayerBoard {
+        &self.board.white
+    }
+
+    fn enemy_not_mut(&self) -> &PlayerBoard {
+        &self.board.black
     }
 
     fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
@@ -1732,6 +1746,18 @@ impl <'a> Side for BlackSide<'a> {
 
     fn enemy(&mut self) -> &mut PlayerBoard {
         &mut self.board.white
+    }
+
+    fn board_not_mut(&self) -> &Board {
+        self.board
+    }
+
+    fn we_not_mut(&self) -> &PlayerBoard {
+        &self.board.black
+    }
+
+    fn enemy_not_mut(&self) -> &PlayerBoard {
+        &self.board.white
     }
 
     fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves {
@@ -1834,6 +1860,7 @@ fn apply_moves<S: Side>(
 
 fn search(side: &mut impl Side) {
     side.board().debug_check();
+
     let old_enemy = side.enemy().clone();
     let en_passant_index = side.board().en_passant_index;
     side.board().en_passant_index = None;
@@ -1919,12 +1946,10 @@ fn can_castle_right<S: Side>(side: &mut S) -> bool {
         return false;
     }
 
-    // TODO: clone
-    let we = side.we().clone();
     let we_old_king = side.we().king;
     for shift in 0..=2 {
         side.we().king.mov(king_starting_index, king_starting_index+shift);
-        let check = side.enemy().has_check(&we, S::color().other());
+        let check = side.enemy_not_mut().has_check(side.we_not_mut(), S::color().other());
         side.we().king = we_old_king;
         if check {
             return false;
@@ -1950,12 +1975,10 @@ fn can_castle_left<S: Side>(side: &mut S) -> bool {
         return false;
     }
 
-    // TODO: clone
-    let we = side.we().clone();
     let we_old_king = side.we().king;
     for shift in 0..=2 {
         side.we().king.mov(king_starting_index, king_starting_index-shift);
-        let check = side.enemy().has_check(&we, S::color().other());
+        let check = side.enemy_not_mut().has_check(side.we_not_mut(), S::color().other());
         side.we().king = we_old_king;
         if check {
             return false;
@@ -2065,7 +2088,7 @@ fn search_en_passant<S: Side>(side: &mut S, old_enemy: &PlayerBoard, en_passant_
     let (x, y) = index_to_position(en_passant_index);
     let next_y = ((y as i8) + S::color().direction()) as u8;
 
-    if side.we().has_en_passant_left(side.enemy(), en_passant_index) {
+    if side.we_not_mut().has_en_passant_left(side.enemy_not_mut(), en_passant_index) {
         search_en_passant_single(
             side,
             old_enemy,
@@ -2075,7 +2098,7 @@ fn search_en_passant<S: Side>(side: &mut S, old_enemy: &PlayerBoard, en_passant_
         );
     }
 
-    if side.we().has_en_passant_right(side.enemy(), en_passant_index) {
+    if side.we_not_mut().has_en_passant_right(side.enemy_not_mut(), en_passant_index) {
         search_en_passant_single(
             side,
             old_enemy,
@@ -2148,7 +2171,8 @@ mod tests {
         unsafe { init() };
 
         let mut game = Game::new();
-        let mut white_side = WhiteSide::new(&mut game.board, 0);
+        let mut board = game.board.clone();
+        let mut white_side = WhiteSide::new(&mut board, 0);
         let white_moves: Vec<_> = game.iter_white_games_moves(&mut white_side)
             .map(|(mov, _)| mov)
             .collect();
@@ -2159,7 +2183,7 @@ mod tests {
         assert_eq!(white_moves.len(), 20);
 
         game.next_move_color = game.next_move_color.other();
-        let mut black_side = BlackSide::new(&mut game.board, 0);
+        let mut black_side = BlackSide::new(&mut board, 0);
         let black_moves: Vec<_> = game.iter_black_games_moves(&mut black_side)
             .map(|(mov, _)| mov)
             .collect();
@@ -2189,5 +2213,60 @@ mod tests {
             game.apply_move(mov).unwrap();
         }
         game.board.debug_check();
+    }
+
+    #[test]
+    fn test_moves_start() {
+        unsafe { init() };
+
+        static SEARCH_COUNTS: &[u64] = &[
+            1,
+            20,
+            400,
+            8_902,
+            197_281,
+        ];
+
+        let game = Game::new();
+        let mut found_boards = HashMap::new();
+        for (depth, expected_count) in SEARCH_COUNTS.iter().copied().enumerate() {
+            found_boards.clear();
+            let count = count_white_moves(game.clone(), depth, &mut found_boards);
+            assert_eq!(count, expected_count);
+            assert_eq!(
+                found_boards.values().sum::<u64>(),
+                expected_count,
+            );
+        }
+    }
+
+    fn count_white_moves(game: Game, depth: usize, found_boards: &mut HashMap<Board, u64>) -> u64 {
+        if depth == 0 {
+            *found_boards.entry(game.board).or_insert(0) += 1;
+            return 1;
+        }
+
+        let mut board = game.board.clone();
+        let mut side = WhiteSide::new(&mut board, 0);
+        let mut count = 0;
+        for (_, next_game) in game.iter_white_games_moves(&mut side) {
+            count += count_black_moves(next_game, depth - 1, found_boards);
+        }
+        count
+    }
+
+    fn count_black_moves(game: Game, depth: usize, found_boards: &mut HashMap<Board, u64>) -> u64 {
+        if depth == 0 {
+            *found_boards.entry(game.board).or_insert(0) += 1;
+            return 1;
+        }
+
+        let mut board = game.board.clone();
+        let mut side = BlackSide::new(&mut board, 0);
+        let mut count = 0;
+        for (_, next_game) in game.iter_black_games_moves(&mut side) {
+            count += count_white_moves(next_game, depth - 1, found_boards);
+        }
+        count
     }
 }
