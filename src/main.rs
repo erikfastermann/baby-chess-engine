@@ -4,6 +4,92 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 const DEFAULT_DEPTH: usize = 4;
 
+// See https://www.chessprogramming.org/Simplified_Evaluation_Function
+
+const SCORE_PAWN: i32 = 100;
+const SCORE_KNIGHT: i32 = 320;
+const SCORE_BISHOP: i32 = 330;
+const SCORE_ROOK: i32 = 500;
+const SCORE_QUEEN: i32 = 900;
+const SCORE_KING: i32 = 20_000;
+
+const SCORE_PAWNS_TABLE: [i32; 64] = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+     5,  5, 10, 25, 25, 10,  5,  5,
+     0,  0,  0, 20, 20,  0,  0,  0,
+     5, -5,-10,  0,  0,-10, -5,  5,
+     5, 10, 10,-20,-20, 10, 10,  5,
+     0,  0,  0,  0,  0,  0,  0,  0,
+];
+
+const SCORE_KNIGHTS_TABLE: [i32; 64] = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50,
+];
+
+const SCORE_BISHOPS_TABLE: [i32; 64] = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+];
+
+const SCORE_ROOKS_TABLE: [i32; 64] = [
+     0,  0,  0,  0,  0,  0,  0,  0,
+     5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+     0,  0,  0,  5,  5,  0,  0,  0,
+];
+
+const SCORE_QUEENS_TABLE: [i32; 64] = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+     -5,  0,  5,  5,  5,  5,  0, -5,
+      0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20,
+];
+
+const SCORE_KING_TABLE_MIDDLE_GAME: [i32; 64] = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+     20, 20,  0,  0,  0,  0, 20, 20,
+     20, 30, 10,  0,  0, 10, 30, 20,
+];
+
+const SCORE_KING_TABLE_END_GAME: [i32; 64] = [
+    -50,-40,-30,-20,-20,-30,-40,-50,
+    -30,-20,-10,  0,  0,-10,-20,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-30,  0,  0,  0,  0,-30,-30,
+    -50,-30,-30,-30,-30,-30,-30,-50,
+];
+
 fn main() -> Result<()> {
     unsafe { init() };
     UCI::new().read_eval_print_loop()
@@ -549,14 +635,14 @@ impl Game {
                 let mut board = self.board.clone();
                 let mut side = WhiteSide::new(&mut board, 0);
                 self.iter_white_games_moves(&mut side)
-                    .map(|(mov, game)| (mov, search_black(&game.board)))
+                    .map(|(mov, mut game)| (mov, search_black(&mut game.board, DEFAULT_DEPTH)))
                     .max_by(|(_, a), (_, b)| a.cmp_white(&b))
             },
             Color::Black => {
                 let mut board = self.board.clone();
                 let mut side = BlackSide::new(&mut board, 0);
                 self.iter_black_games_moves(&mut side)
-                    .map(|(mov, game)| (mov, search_white(&game.board)))
+                    .map(|(mov, mut game)| (mov, search_white(&mut game.board, DEFAULT_DEPTH)))
                     .max_by(|(_, a), (_, b)| a.cmp_black(&b))
             },
         };
@@ -624,13 +710,33 @@ impl PlayerBoard {
         self.king.clear(index);
     }
 
-    fn score(&self) -> f64 {
-        let score = self.pawns.count()
-            + self.bishops.count()*3
-            + self.knights.count()*3
-            + self.rooks.count()*5
-            + self.queens.count()*9;
-        score.into()
+    fn score(&self, tables: &PieceSquareTables, is_end_game: bool) -> i32 {
+        fn position(piece: Bitset, table: &[i32; 64]) -> i32 {
+            piece.indices().map(|index| table[index as usize]).sum::<i32>()
+        }
+
+        let position = if is_end_game {
+            position(self.pawns, &tables.pawns.end_game)
+                + position(self.knights, &tables.knights.end_game)
+                + position(self.bishops, &tables.bishops.end_game)
+                + position(self.rooks, &tables.rooks.end_game)
+                + position(self.queens, &tables.queens.end_game)
+                + position(self.king, &tables.king.end_game)
+        } else {
+            position(self.pawns, &tables.pawns.mid_game)
+                + position(self.knights, &tables.knights.mid_game)
+                + position(self.bishops, &tables.bishops.mid_game)
+                + position(self.rooks, &tables.rooks.mid_game)
+                + position(self.queens, &tables.queens.mid_game)
+                + position(self.king, &tables.king.mid_game)
+        };
+        let material = self.pawns.count() * SCORE_PAWN
+            + self.knights.count() * SCORE_KNIGHT
+            + self.bishops.count() * SCORE_BISHOP
+            + self.rooks.count() * SCORE_ROOK
+            + self.queens.count() * SCORE_QUEEN
+            + self.king.count() * SCORE_KING;
+        position + material
     }
 
     fn which_piece(&self, index: u8) -> Option<Piece> {
@@ -743,6 +849,60 @@ static mut DIAGONALS_RIGHT: [Bitset; 64] = [Bitset(0); 64];
 static mut KING_MOVES: [Bitset; 64] = [Bitset(0); 64];
 static mut KNIGHT_MOVES: [Bitset; 64] = [Bitset(0); 64];
 
+static WHITE_PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables {
+    pawns: PieceSquareTable {
+        mid_game: SCORE_PAWNS_TABLE,
+        end_game: SCORE_PAWNS_TABLE,
+    },
+    knights: PieceSquareTable {
+        mid_game: SCORE_KNIGHTS_TABLE,
+        end_game: SCORE_KNIGHTS_TABLE,
+    },
+    bishops: PieceSquareTable {
+        mid_game: SCORE_BISHOPS_TABLE,
+        end_game: SCORE_BISHOPS_TABLE,
+    },
+    rooks: PieceSquareTable {
+        mid_game: SCORE_ROOKS_TABLE,
+        end_game: SCORE_ROOKS_TABLE,
+    },
+    queens: PieceSquareTable {
+        mid_game: SCORE_QUEENS_TABLE,
+        end_game: SCORE_QUEENS_TABLE,
+    },
+    king: PieceSquareTable {
+        mid_game: SCORE_KING_TABLE_MIDDLE_GAME,
+        end_game: SCORE_KING_TABLE_END_GAME,
+    },
+};
+
+static mut BLACK_PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables {
+    pawns: PieceSquareTable {
+        mid_game: SCORE_PAWNS_TABLE,
+        end_game: SCORE_PAWNS_TABLE,
+    },
+    knights: PieceSquareTable {
+        mid_game: SCORE_KNIGHTS_TABLE,
+        end_game: SCORE_KNIGHTS_TABLE,
+    },
+    bishops: PieceSquareTable {
+        mid_game: SCORE_BISHOPS_TABLE,
+        end_game: SCORE_BISHOPS_TABLE,
+    },
+    rooks: PieceSquareTable {
+        mid_game: SCORE_ROOKS_TABLE,
+        end_game: SCORE_ROOKS_TABLE,
+    },
+    queens: PieceSquareTable {
+        mid_game: SCORE_QUEENS_TABLE,
+        end_game: SCORE_QUEENS_TABLE,
+    },
+    king: PieceSquareTable {
+        mid_game: SCORE_KING_TABLE_MIDDLE_GAME,
+        end_game: SCORE_KING_TABLE_END_GAME,
+    },
+};
+
 fn diagonal_left(index: u8) -> Bitset {
     unsafe { DIAGONALS_LEFT[usize::from(index)] }
 }
@@ -759,10 +919,15 @@ fn knight_move(index: u8) -> Bitset {
     unsafe { KNIGHT_MOVES[usize::from(index)] }
 }
 
+fn black_piece_square_tables() -> &'static PieceSquareTables {
+    unsafe { &BLACK_PIECE_SQUARE_TABLES }
+}
+
 unsafe fn init() {
     init_diagonals();
     init_king_moves();
     init_knight_moves();
+    init_black_piece_square_tables();
 }
 
 fn positions_to_bitset(positions: impl Iterator<Item = (u8, u8)>) -> Bitset {
@@ -834,6 +999,30 @@ fn knight_moves(moves: &mut [Bitset; 64]) {
             .map(|(x, y)| (u8::try_from(x).unwrap(), u8::try_from(y).unwrap()));
         moves[usize::from(index)] = positions_to_bitset(positions)
     }
+}
+
+unsafe fn init_black_piece_square_tables() {
+    reverse_piece_square_tables(&mut BLACK_PIECE_SQUARE_TABLES)
+}
+
+fn reverse_piece_square_tables(tables: &mut PieceSquareTables) {
+    tables.pawns.mid_game.reverse();
+    tables.pawns.end_game.reverse();
+
+    tables.knights.mid_game.reverse();
+    tables.knights.end_game.reverse();
+
+    tables.bishops.mid_game.reverse();
+    tables.bishops.end_game.reverse();
+
+    tables.rooks.mid_game.reverse();
+    tables.rooks.end_game.reverse();
+
+    tables.queens.mid_game.reverse();
+    tables.queens.end_game.reverse();
+
+    tables.king.mid_game.reverse();
+    tables.king.end_game.reverse();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1321,6 +1510,26 @@ impl Board {
         );
         debug_assert!(self.bitset().count() <= 32);
     }
+
+    fn is_end_game(&self) -> bool {
+        if self.white.queens.is_empty() && self.black.queens.is_empty() {
+            return true;
+        }
+
+        let white_minor_pieces = self.white.knights.count() + self.white.bishops.count();
+        let white_major_pieces = self.white.rooks.count() + self.white.queens.count();
+
+        let black_minor_pieces = self.black.knights.count() + self.black.bishops.count();
+        let black_major_pieces = self.black.rooks.count() + self.black.queens.count();
+
+        let no_major_pieces = white_major_pieces == 0 && black_major_pieces == 0;
+        let max_one_minor_piece = white_minor_pieces <= 1 && black_minor_pieces <= 1;
+        if no_major_pieces && max_one_minor_piece {
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[repr(u8)]
@@ -1557,54 +1766,64 @@ impl Color {
     }
 }
 
+#[derive(Debug)]
 struct Score {
-    best_points: f64,
+    best_points: Option<i32>,
 }
 
 impl Score {
     fn zero() -> Self {
-        Self {
-            best_points: 0.0,
-        }
+        Self { best_points: None }
     }
 
     fn board(board: &Board) -> Self {
-        Self {
-            best_points: board.black.score() - board.white.score(),
-        }
+        let is_end_game = board.is_end_game();
+        let white = board.white.score(&WHITE_PIECE_SQUARE_TABLES, is_end_game);
+        let black = board.black.score(black_piece_square_tables(), is_end_game);
+        Self { best_points: Some(black - white) }
     }
 
     fn checkmate_black() -> Self {
-        Self {
-            best_points: -150.0,
-        }
+        Self { best_points: Some(-SCORE_KING) }
     }
 
     fn checkmate_white() -> Self {
-        Self {
-            best_points: 150.0,
-        }
+        Self { best_points: Some(SCORE_KING) }
     }
 
     fn cmp_black(&self, rhs: &Self) -> Ordering {
-        self.best_points.total_cmp(&rhs.best_points)
+        self.best_points.cmp(&rhs.best_points)
     }
 
     fn cmp_white(&self, rhs: &Self) -> Ordering {
-        rhs.best_points.total_cmp(&self.best_points)
+        rhs.best_points.cmp(&self.best_points)
     }
 
     fn update_white(&mut self, other: Score) {
-        if other.best_points < self.best_points {
+        if self.best_points.is_none() || other.best_points < self.best_points {
             self.best_points = other.best_points;
         }
     }
 
     fn update_black(&mut self, other: Score) {
-        if other.best_points > self.best_points {
+        if self.best_points.is_none() || other.best_points > self.best_points {
             self.best_points = other.best_points;
         }
     }
+}
+
+struct PieceSquareTable {
+    mid_game: [i32; 64],
+    end_game: [i32; 64],
+}
+
+struct PieceSquareTables {
+    pawns: PieceSquareTable,
+    knights: PieceSquareTable,
+    bishops: PieceSquareTable,
+    rooks: PieceSquareTable,
+    queens: PieceSquareTable,
+    king: PieceSquareTable,
 }
 
 trait Side {
@@ -1651,15 +1870,7 @@ impl <'a> Side for WhiteSide<'a> {
     }
 
     fn search(&mut self) {
-        if self.board.black.king.is_empty() {
-            self.score.update_white(Score::checkmate_black());
-        } else if self.depth == 0 {
-            self.score.update_white(Score::board(&self.board));
-        } else {
-            let mut other = BlackSide::new(self.board, self.depth - 1);
-            search(&mut other);
-            self.score.update_white(other.score);
-        }
+        self.score.update_white(search_black(self.board, self.depth));
     }
 
     fn board(&mut self) -> &mut Board {
@@ -1725,15 +1936,7 @@ impl <'a> Side for BlackSide<'a> {
     }
 
     fn search(&mut self) {
-        if self.board.white.king.is_empty() {
-            self.score.update_black(Score::checkmate_white());
-        } else if self.depth == 0 {
-            self.score.update_black(Score::board(self.board));
-        } else {
-            let mut other = WhiteSide::new(self.board, self.depth - 1);
-            search(&mut other);
-            self.score.update_black(other.score);
-        }
+        self.score.update_black(search_white(self.board, self.depth));
     }
 
     fn board(&mut self) -> &mut Board {
@@ -1801,18 +2004,28 @@ fn castle_right_apply<S: Side>(side: &mut S) {
     side.we().disable_castle();
 }
 
-fn search_white(board: &Board) -> Score {
-    let mut board = board.clone();
-    let mut side = WhiteSide::new(&mut board, DEFAULT_DEPTH);
-    search(&mut side);
-    side.score
+fn search_white(board: &mut Board, depth: usize) -> Score {
+    if board.white.king.is_empty() {
+        Score::checkmate_white()
+    } else if depth == 0 {
+        Score::board(board)
+    } else {
+        let mut side = WhiteSide::new(board, depth - 1);
+        search(&mut side);
+        side.score
+    }
 }
 
-fn search_black(board: &Board) -> Score {
-    let mut board = board.clone();
-    let mut side = BlackSide::new(&mut board, DEFAULT_DEPTH);
-    search(&mut side);
-    side.score
+fn search_black(board: &mut Board, depth: usize) -> Score {
+    if board.black.king.is_empty() {
+        Score::checkmate_black()
+    } else if depth == 0 {
+        Score::board(board)
+    } else {
+        let mut side = BlackSide::new(board, depth - 1);
+        search(&mut side);
+        side.score
+    }
 }
 
 fn apply_moves_with<S: Side>(
