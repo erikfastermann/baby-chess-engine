@@ -2,7 +2,7 @@ use std::{fmt::{self, Binary}, ops::{BitOr, Not, BitAnd, Shl, Shr}, iter::zip, e
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const DEFAULT_DEPTH: usize = 4;
+const DEFAULT_DEPTH: usize = 5;
 
 // See https://www.chessprogramming.org/Simplified_Evaluation_Function
 
@@ -1927,20 +1927,22 @@ fn apply_moves_with<S: Side>(
     let we_old_selected_piece = *get_piece_bitset(side.we());
     for from in get_piece_bitset(side.we()).indices() {
         let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
-        for to in moves.indices() {
-            get_piece_bitset(side.we()).mov(from, to);
-            let cont = next(side, from, to);
-            *get_piece_bitset(side.we()) = we_old_selected_piece;
-            if !cont {
-                return false;
-            }
-        }
+
         for to in captures.indices() {
             side.enemy().captured(to);
             get_piece_bitset(side.we()).mov(from, to);
             let cont = next(side, from, to);
             *get_piece_bitset(side.we()) = we_old_selected_piece;
             *side.enemy() = *old_enemy;
+            if !cont {
+                return false;
+            }
+        }
+
+        for to in moves.indices() {
+            get_piece_bitset(side.we()).mov(from, to);
+            let cont = next(side, from, to);
+            *get_piece_bitset(side.we()) = we_old_selected_piece;
             if !cont {
                 return false;
             }
@@ -1977,11 +1979,7 @@ fn search<S: Side>(side: &mut S, next: &mut impl Next) {
         side.board().en_passant_index = en_passant_index;
         return;
     }
-    if !search_queens(side, next, &old_enemy) {
-        side.board().en_passant_index = en_passant_index;
-        return;
-    }
-    if !search_rooks(side, next, &old_enemy) {
+    if !search_knights(side, next, &old_enemy) {
         side.board().en_passant_index = en_passant_index;
         return;
     }
@@ -1989,15 +1987,19 @@ fn search<S: Side>(side: &mut S, next: &mut impl Next) {
         side.board().en_passant_index = en_passant_index;
         return;
     }
-    if !search_knights(side, next, &old_enemy) {
+    if !search_rooks(side, next, &old_enemy) {
         side.board().en_passant_index = en_passant_index;
         return;
     }
-    if !search_king(side, next, &old_enemy) {
+    if !search_queens(side, next, &old_enemy) {
         side.board().en_passant_index = en_passant_index;
         return;
     }
     if !search_castle(side, next) {
+        side.board().en_passant_index = en_passant_index;
+        return;
+    }
+    if !search_king(side, next, &old_enemy) {
         side.board().en_passant_index = en_passant_index;
         return;
     }
