@@ -17,7 +17,7 @@ impl WhiteSearcher {
 impl Visitor for WhiteSearcher {
     fn visit<S: Side>(&mut self, side: &mut S, _: Move) -> bool {
         let score = -search_black(
-            side.board(),
+            side.board_mut(),
             self.depth,
             -self.beta,
             -self.alpha,
@@ -46,7 +46,7 @@ impl BlackSearcher {
 impl Visitor for BlackSearcher {
     fn visit<S: Side>(&mut self, side: &mut S, _: Move) -> bool {
         let score = -search_white(
-            side.board(),
+            side.board_mut(),
             self.depth,
             -self.beta,
             -self.alpha,

@@ -3,15 +3,13 @@ use crate::{color::Color, board::{Board, PlayerBoard}, bitset::Bitset, moves::Mo
 pub trait Side {
     fn color() -> Color;
 
-    // TODO: reverse naming mut
+    fn board(&self) -> &Board;
+    fn we(&self) -> &PlayerBoard;
+    fn enemy(&self) -> &PlayerBoard;
 
-    fn board(&mut self) -> &mut Board;
-    fn we(&mut self) -> &mut PlayerBoard;
-    fn enemy(&mut self) -> &mut PlayerBoard;
-
-    fn board_not_mut(&self) -> &Board;
-    fn we_not_mut(&self) -> &PlayerBoard;
-    fn enemy_not_mut(&self) -> &PlayerBoard;
+    fn board_mut(&mut self) -> &mut Board;
+    fn we_mut(&mut self) -> &mut PlayerBoard;
+    fn enemy_mut(&mut self) -> &mut PlayerBoard;
 
     fn pawn_normal_single_without_en_passant(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
     fn pawn_double(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Moves;
@@ -35,27 +33,27 @@ impl <'a> Side for WhiteSide<'a> {
         Color::White
     }
 
-    fn board(&mut self) -> &mut Board {
+    fn board_mut(&mut self) -> &mut Board {
         self.board
     }
 
-    fn we(&mut self) -> &mut PlayerBoard {
+    fn we_mut(&mut self) -> &mut PlayerBoard {
         &mut self.board.white
     }
 
-    fn enemy(&mut self) -> &mut PlayerBoard {
+    fn enemy_mut(&mut self) -> &mut PlayerBoard {
         &mut self.board.black
     }
 
-    fn board_not_mut(&self) -> &Board {
+    fn board(&self) -> &Board {
         self.board
     }
 
-    fn we_not_mut(&self) -> &PlayerBoard {
+    fn we(&self) -> &PlayerBoard {
         &self.board.white
     }
 
-    fn enemy_not_mut(&self) -> &PlayerBoard {
+    fn enemy(&self) -> &PlayerBoard {
         &self.board.black
     }
 
@@ -91,27 +89,27 @@ impl <'a> Side for BlackSide<'a> {
         Color::Black
     }
 
-    fn board(&mut self) -> &mut Board {
+    fn board_mut(&mut self) -> &mut Board {
         self.board
     }
 
-    fn we(&mut self) -> &mut PlayerBoard {
+    fn we_mut(&mut self) -> &mut PlayerBoard {
         &mut self.board.black
     }
 
-    fn enemy(&mut self) -> &mut PlayerBoard {
+    fn enemy_mut(&mut self) -> &mut PlayerBoard {
         &mut self.board.white
     }
 
-    fn board_not_mut(&self) -> &Board {
+    fn board(&self) -> &Board {
         self.board
     }
 
-    fn we_not_mut(&self) -> &PlayerBoard {
+    fn we(&self) -> &PlayerBoard {
         &self.board.black
     }
 
-    fn enemy_not_mut(&self) -> &PlayerBoard {
+    fn enemy(&self) -> &PlayerBoard {
         &self.board.white
     }
 
@@ -135,23 +133,23 @@ impl <'a> Side for BlackSide<'a> {
 pub fn castle_left_apply<S: Side>(side: &mut S) -> Move {
     let king_from = S::color().king_starting_index();
     let king_to = S::color().king_starting_index() - 2;
-    side.we().king.mov(king_from, king_to);
-    side.we().rooks.mov(
+    side.we_mut().king.mov(king_from, king_to);
+    side.we_mut().rooks.mov(
         S::color().rook_left_starting_index(),
         position_to_index(3, S::color().first_row(),
     ));
-    side.we().disable_castle();
+    side.we_mut().disable_castle();
     Move::Normal { from: king_from, to: king_to }
 }
 
 pub fn castle_right_apply<S: Side>(side: &mut S) -> Move {
     let king_from = S::color().king_starting_index();
     let king_to = S::color().king_starting_index() + 2;
-    side.we().king.mov(king_from, king_to);
-    side.we().rooks.mov(
+    side.we_mut().king.mov(king_from, king_to);
+    side.we_mut().rooks.mov(
         S::color().rook_right_starting_index(),
         position_to_index(5, S::color().first_row(),
     ));
-    side.we().disable_castle();
+    side.we_mut().disable_castle();
     Move::Normal { from: king_from, to: king_to }
 }

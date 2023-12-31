@@ -9,38 +9,38 @@ pub fn visit<S: Side>(side: &mut S, visitor: &mut impl Visitor) {
 
     let old_enemy = side.enemy().clone();
     let en_passant_index = side.board().en_passant_index;
-    side.board().en_passant_index = None;
+    side.board_mut().en_passant_index = None;
 
     if !pawns(side, visitor, &old_enemy, en_passant_index) {
-        side.board().en_passant_index = en_passant_index;
+        side.board_mut().en_passant_index = en_passant_index;
         return;
     }
     if !knights(side, visitor, &old_enemy) {
-        side.board().en_passant_index = en_passant_index;
+        side.board_mut().en_passant_index = en_passant_index;
         return;
     }
     if !bishops(side, visitor, &old_enemy) {
-        side.board().en_passant_index = en_passant_index;
+        side.board_mut().en_passant_index = en_passant_index;
         return;
     }
     if !rooks(side, visitor, &old_enemy) {
-        side.board().en_passant_index = en_passant_index;
+        side.board_mut().en_passant_index = en_passant_index;
         return;
     }
     if !queens(side, visitor, &old_enemy) {
-        side.board().en_passant_index = en_passant_index;
+        side.board_mut().en_passant_index = en_passant_index;
         return;
     }
     if !castle(side, visitor) {
-        side.board().en_passant_index = en_passant_index;
+        side.board_mut().en_passant_index = en_passant_index;
         return;
     }
     if !king(side, visitor, &old_enemy) {
-        side.board().en_passant_index = en_passant_index;
+        side.board_mut().en_passant_index = en_passant_index;
         return;
     }
 
-    side.board().en_passant_index = en_passant_index;
+    side.board_mut().en_passant_index = en_passant_index;
 }
 
 fn apply_moves_with<S: Side>(
@@ -53,25 +53,25 @@ fn apply_moves_with<S: Side>(
     let enemy_pieces = side.enemy().bitset();
     let all_pieces = enemy_pieces | side.we().bitset();
 
-    let we_old_selected_piece = *get_piece_bitset(side.we());
-    for from in get_piece_bitset(side.we()).indices() {
+    let we_old_selected_piece = *get_piece_bitset(side.we_mut());
+    for from in get_piece_bitset(side.we_mut()).indices() {
         let Moves { moves, captures } = get_moves(all_pieces, from, enemy_pieces);
 
         for to in captures.indices() {
-            side.enemy().captured(to);
-            get_piece_bitset(side.we()).mov(from, to);
+            side.enemy_mut().captured(to);
+            get_piece_bitset(side.we_mut()).mov(from, to);
             let cont = visitor(side, from, to);
-            *get_piece_bitset(side.we()) = we_old_selected_piece;
-            *side.enemy() = *old_enemy;
+            *get_piece_bitset(side.we_mut()) = we_old_selected_piece;
+            *side.enemy_mut() = *old_enemy;
             if !cont {
                 return false;
             }
         }
 
         for to in moves.indices() {
-            get_piece_bitset(side.we()).mov(from, to);
+            get_piece_bitset(side.we_mut()).mov(from, to);
             let cont = visitor(side, from, to);
-            *get_piece_bitset(side.we()) = we_old_selected_piece;
+            *get_piece_bitset(side.we_mut()) = we_old_selected_piece;
             if !cont {
                 return false;
             }
@@ -179,9 +179,9 @@ fn can_castle_right<S: Side>(side: &mut S) -> bool {
 
     let we_old_king = side.we().king;
     for shift in 0..=2 {
-        side.we().king.mov(king_starting_index, king_starting_index+shift);
-        let check = side.enemy_not_mut().has_check(side.we_not_mut(), S::color().other());
-        side.we().king = we_old_king;
+        side.we_mut().king.mov(king_starting_index, king_starting_index+shift);
+        let check = side.enemy().has_check(side.we(), S::color().other());
+        side.we_mut().king = we_old_king;
         if check {
             return false;
         }
@@ -208,9 +208,9 @@ fn can_castle_left<S: Side>(side: &mut S) -> bool {
 
     let we_old_king = side.we().king;
     for shift in 0..=2 {
-        side.we().king.mov(king_starting_index, king_starting_index-shift);
-        let check = side.enemy_not_mut().has_check(side.we_not_mut(), S::color().other());
-        side.we().king = we_old_king;
+        side.we_mut().king.mov(king_starting_index, king_starting_index-shift);
+        let check = side.enemy().has_check(side.we(), S::color().other());
+        side.we_mut().king = we_old_king;
         if check {
             return false;
         }
@@ -224,9 +224,9 @@ fn castle_reset(
     we_old_king: Bitset,
     we_old_rooks: Bitset,
 ) {
-    side.we().reset_castle(old_can_castle);
-    side.we().king = we_old_king;
-    side.we().rooks = we_old_rooks;
+    side.we_mut().reset_castle(old_can_castle);
+    side.we_mut().king = we_old_king;
+    side.we_mut().rooks = we_old_rooks;
 }
 
 fn castle_right<S: Side>(side: &mut S, visitor: &mut impl Visitor) -> bool {
@@ -240,9 +240,9 @@ fn castle_right<S: Side>(side: &mut S, visitor: &mut impl Visitor) -> bool {
 }
 
 fn castle_left<S: Side>(side: &mut S, visitor: &mut impl Visitor) -> bool {
-    let old_can_castle = side.we().can_castle;
-    let we_old_king = side.we().king;
-    let we_old_rooks = side.we().rooks;
+    let old_can_castle = side.we_mut().can_castle;
+    let we_old_king = side.we_mut().king;
+    let we_old_rooks = side.we_mut().rooks;
     let mov = castle_left_apply(side);
     let cont = visitor.visit(side, mov);
     castle_reset(side, old_can_castle, we_old_king, we_old_rooks);
@@ -272,9 +272,9 @@ fn pawns<S: Side>(
         |player_board| &mut player_board.pawns,
         S::pawn_double,
         |side, from, to| {
-            side.board().en_passant_index = Some(to);
+            side.board_mut().en_passant_index = Some(to);
             let cont = visitor.visit(side, Move::Normal { from, to });
-            side.board().en_passant_index = None;
+            side.board_mut().en_passant_index = None;
             cont
         },
     );
@@ -288,7 +288,7 @@ fn pawns<S: Side>(
         |player_board| &mut player_board.pawns,
         S::pawn_promotion,
         |side, from, to| {
-            side.we().pawns.clear(to);
+            side.we_mut().pawns.clear(to);
             pawn_promote_figures(side, visitor, from, to)
         },
     );
@@ -304,30 +304,30 @@ fn pawns<S: Side>(
 }
 
 fn pawn_promote_figures<S: Side>(side: &mut S, visitor: &mut impl Visitor, from: u8, to: u8) -> bool {
-    side.we().queens.set(to);
+    side.we_mut().queens.set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Queen, from, to });
-    side.we().queens.clear(to);
+    side.we_mut().queens.clear(to);
     if !cont {
         return false;
     }
 
-    side.we().rooks.set(to);
+    side.we_mut().rooks.set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Rook, from, to });
-    side.we().rooks.clear(to);
+    side.we_mut().rooks.clear(to);
     if !cont {
         return false;
     }
 
-    side.we().knights.set(to);
+    side.we_mut().knights.set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Knight, from, to });
-    side.we().knights.clear(to);
+    side.we_mut().knights.clear(to);
     if !cont {
         return false;
     }
 
-    side.we().bishops.set(to);
+    side.we_mut().bishops.set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Bishop, from, to });
-    side.we().bishops.clear(to);
+    side.we_mut().bishops.clear(to);
     cont
 }
 
@@ -339,11 +339,11 @@ fn en_passant_single<S: Side>(
     from: u8,
     to: u8,
 ) -> bool {
-    side.enemy().pawns.clear(captured);
-    side.we().pawns.mov(from, to);
+    side.enemy_mut().pawns.clear(captured);
+    side.we_mut().pawns.mov(from, to);
     let cont = visitor.visit(side, Move::Normal { from, to });
-    side.we().pawns.mov(to, from);
-    *side.enemy() = *old_enemy;
+    side.we_mut().pawns.mov(to, from);
+    *side.enemy_mut() = *old_enemy;
     cont
 }
 
@@ -356,7 +356,7 @@ fn en_passant<S: Side>(
     let (x, y) = index_to_position(en_passant_index);
     let next_y = ((y as i8) + S::color().direction()) as u8;
 
-    if side.we_not_mut().has_en_passant_left(side.enemy_not_mut(), en_passant_index) {
+    if side.we().has_en_passant_left(side.enemy(), en_passant_index) {
         let cont = en_passant_single(
             side,
             visitor,
@@ -370,7 +370,7 @@ fn en_passant<S: Side>(
         }
     }
 
-    if side.we_not_mut().has_en_passant_right(side.enemy_not_mut(), en_passant_index) {
+    if side.we().has_en_passant_right(side.enemy(), en_passant_index) {
         let cont = en_passant_single(
             side,
             visitor,

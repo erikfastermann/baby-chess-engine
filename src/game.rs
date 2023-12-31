@@ -120,9 +120,9 @@ impl Game {
             None
         } else {
             let piece = side.we().which_piece(from).unwrap();
-            side.we().remove_piece(piece, from);
-            side.enemy().captured(to);
-            side.we().place_piece(piece, to);
+            side.we_mut().remove_piece(piece, from);
+            side.enemy_mut().captured(to);
+            side.we_mut().place_piece(piece, to);
 
             Self::disable_castle(side, from, to);
             Self::possible_en_passant(piece, from, to)
@@ -138,10 +138,10 @@ impl Game {
         }
         let mov = Move::Normal { from, to };
         let is_en_passant = if Some(mov) == S::color().en_passant_left(en_passant_index) {
-            assert!(side.we_not_mut().has_en_passant_left(side.enemy_not_mut(), en_passant_index));
+            assert!(side.we().has_en_passant_left(side.enemy(), en_passant_index));
             true
         } else if Some(mov) == S::color().en_passant_right(en_passant_index) {
-            assert!(side.we_not_mut().has_en_passant_right(side.enemy_not_mut(), en_passant_index));
+            assert!(side.we().has_en_passant_right(side.enemy(), en_passant_index));
             true
         } else {
             false
@@ -149,18 +149,18 @@ impl Game {
         if !is_en_passant {
             return false;
         }
-        side.we().pawns.mov(from, to);
-        side.enemy().pawns.checked_clear(en_passant_index);
+        side.we_mut().pawns.mov(from, to);
+        side.enemy_mut().pawns.checked_clear(en_passant_index);
         true
     }
 
     fn disable_castle<S: Side>(side: &mut S, from: u8, to: u8) {
         if from == S::color().king_starting_index() || to == S::color().king_starting_index() {
-            side.we().disable_castle();
+            side.we_mut().disable_castle();
         } else if from == S::color().rook_left_starting_index() || to == S::color().rook_left_starting_index() {
-            side.we().disable_castle_left();
+            side.we_mut().disable_castle_left();
         } else if from == S::color().rook_right_starting_index() || to == S::color().rook_right_starting_index() {
-            side.we().disable_castle_right();
+            side.we_mut().disable_castle_right();
         }
     }
 
@@ -183,9 +183,9 @@ impl Game {
 
     fn apply_move_promotion(side: &mut impl Side, piece: Piece, from: u8, to: u8) {
         assert!(side.we().pawns.has(from));
-        side.we().pawns.checked_clear(from);
-        side.enemy().captured(to);
-        side.we().place_piece(piece, to);
+        side.we_mut().pawns.checked_clear(from);
+        side.enemy_mut().captured(to);
+        side.we_mut().place_piece(piece, to);
     }
 
     fn possible_en_passant(piece: Piece, from: u8, to: u8) -> Option<u8> {
@@ -250,15 +250,15 @@ struct LegalMovesBuilder<'a> {
 
 impl <'a> Visitor for LegalMovesBuilder<'a> {
     fn visit<S: Side>(&mut self, side: &mut S, mov: Move) -> bool {
-        let has_check = side.enemy_not_mut().has_check(
-            side.we_not_mut(),
+        let has_check = side.enemy().has_check(
+            side.we(),
             S::color().other(),
         );
         if has_check {
             return true;
         }
         let repeats = self.full_position_counts
-            .get(side.board_not_mut())
+            .get(side.board())
             .is_some_and(|count| *count >= 2);
         if repeats {
             return true;
