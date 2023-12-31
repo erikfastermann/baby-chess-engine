@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{piece::Piece, position::{index_to_position, position_to_index}, result::Result};
+use crate::{piece::Piece, position::{index_to_position, position_to_index}, result::Result, color::Color};
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,6 +22,22 @@ impl fmt::Debug for Move {
 }
 
 impl Move {
+    pub fn castle_left(color: Color) -> Self {
+        Move::Normal {
+            from: color.king_starting_index(),
+            to: color.king_starting_index() - 2,
+        }
+    }
+
+    pub fn castle_right(color: Color) -> Self {
+        Move::Normal {
+            from: color.king_starting_index(),
+            to: color.king_starting_index() + 2,
+        }
+    }
+
+    // TODO: refactor using color
+
     pub fn white_en_passant_left(en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
         if x == 0 {

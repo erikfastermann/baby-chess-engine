@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt, error};
 
-use crate::{board::Board, color::Color, mov::Move, visit::{visit, Visitor}, side::{WhiteSide, BlackSide, Side, castle_left_apply, castle_right_apply}, piece::Piece, position::index_to_position, search::{search_white, search_black}, config, result::Result};
+use crate::{board::Board, color::Color, mov::Move, visit::{visit, Visitor}, side::{WhiteSide, BlackSide, Side, castle_left_apply, castle_right_apply}, piece::Piece, position::index_to_position, search::{search_white, search_black, self}, config, result::Result};
 
 const SCORE_MIN: i32 = i32::MAX * -1;
 const SCORE_MAX: i32 = i32::MAX;
@@ -69,6 +69,8 @@ impl Game {
             Color::Black => self.board.black.has_check(&self.board.black, Color::White),
         }
     }
+
+    // TODO: use board logic here
 
     pub fn apply_move(&mut self, mov: Move) -> Result<()> {
         let is_legal = self.legal_moves().contains(&mov);
@@ -208,6 +210,41 @@ impl Game {
         let mut best_move = None;
         for mov in self.legal_moves() {
             next_game.apply_move_unchecked(mov);
+            let score = -search::search(
+                &mut next_game.board,
+                self.next_move_color.other(),
+                config::DEFAULT_DEPTH,
+                SCORE_MIN,
+                SCORE_MAX,
+            );
+            next_game.reset_with(&self);
+
+            if Some(score) > max_score {
+                max_score = Some(score);
+                best_move = Some(mov);
+            }
+        }
+
+        match best_move {
+            Some(mov) => Ok(mov),
+            None => {
+                if self.has_check() {
+                    Err(EndOfGameError::Checkmate.into())
+                } else {
+                    Err(EndOfGameError::Other.into())
+                }
+            },
+        }
+    }
+
+    // TODO: remove
+    pub fn best_move_old(&self) -> Result<Move> {
+        let mut next_game = self.clone();
+
+        let mut max_score = None;
+        let mut best_move = None;
+        for mov in self.legal_moves() {
+            next_game.apply_move_unchecked(mov);
             let score = match self.next_move_color.other() {
                 Color::White => -search_white(
                     &mut next_game.board,
@@ -314,7 +351,7 @@ mod test {
     }
 
     #[test]
-    fn test_moves_start_recursive() {
+    fn test_moves_start_recursive_old() {
         unsafe { init() };
 
         static SEARCH_COUNTS: &[u64] = &[
@@ -329,7 +366,7 @@ mod test {
         let mut found_boards = HashMap::new();
         for (depth, expected_count) in SEARCH_COUNTS.iter().copied().enumerate() {
             found_boards.clear();
-            let count = count_moves(&game, depth, &mut found_boards);
+            let count = count_moves_old(&game, depth, &mut found_boards);
             assert_eq!(count, expected_count);
             assert_eq!(
                 found_boards.values().sum::<u64>(),
@@ -338,7 +375,7 @@ mod test {
         }
     }
 
-    fn count_moves(game: &Game, depth: usize, found_boards: &mut HashMap<Board, u64>) -> u64 {
+    fn count_moves_old(game: &Game, depth: usize, found_boards: &mut HashMap<Board, u64>) -> u64 {
         if depth == 0 {
             *found_boards.entry(game.board.clone()).or_insert(0) += 1;
             return 1;
@@ -348,7 +385,7 @@ mod test {
         let mut count = 0;
         for mov in game.legal_moves() {
             next_game.apply_move_unchecked(mov);
-            count += count_moves(&next_game, depth - 1, found_boards);
+            count += count_moves_old(&next_game, depth - 1, found_boards);
             next_game.reset_with(game);
         }
         count

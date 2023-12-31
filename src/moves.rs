@@ -1,6 +1,15 @@
 use std::iter::zip;
 
-use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::PlayerBoard};
+use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::PlayerBoard, mov::Move};
+
+pub type SimpleMoves = [(u8, u8)];
+pub const SIMPLE_MOVES_BUFFER_LEN: usize = 218; // https://www.chessprogramming.org/Chess_Position
+pub type SimpleMovesBuffer = [(u8, u8); SIMPLE_MOVES_BUFFER_LEN];
+
+// Castle: 2, En Passant: 2, Pawn Double Step: 8, Promotion: 8*4
+// (Double Step and Promotion cannot occur at the same time)
+pub const SPECIAL_MOVES_BUFFER_LEN: usize = 2 + 2 + 8*4;
+pub type SpecialMovesBuffer = [Move; SPECIAL_MOVES_BUFFER_LEN];
 
 static mut DIAGONALS_LEFT: [Bitset; 64] = [bitset::ZERO; 64];
 static mut DIAGONALS_RIGHT: [Bitset; 64] = [bitset::ZERO; 64];

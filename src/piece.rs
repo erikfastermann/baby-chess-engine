@@ -1,5 +1,12 @@
 use crate::result::Result;
 
+pub static PROMOTION_PIECES: [Piece; 4] = [
+    Piece::Queen,
+    Piece::Rook,
+    Piece::Knight,
+    Piece::Bishop,
+];
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Piece {
@@ -40,6 +47,6 @@ impl Piece {
     }
 
     pub fn can_promote_to(&self) -> bool {
-        matches!(*self, Piece::Queen | Piece::Rook | Piece::Knight | Piece::Bishop)
+        PROMOTION_PIECES.contains(self)
     }
 }
