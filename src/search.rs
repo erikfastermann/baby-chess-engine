@@ -61,7 +61,7 @@ impl Visitor for BlackSearcher {
 }
 
 pub fn search_white(board: &mut Board, depth: usize, alpha: i32, beta: i32) -> i32 {
-    if depth == 0 || board.white.king.is_empty() {
+    if depth == 0 || board.white.king().is_empty() {
         board.score(Color::White)
     } else {
         let mut side = WhiteSide::new(board);
@@ -72,7 +72,7 @@ pub fn search_white(board: &mut Board, depth: usize, alpha: i32, beta: i32) -> i
 }
 
 pub fn search_black(board: &mut Board, depth: usize, alpha: i32, beta: i32) -> i32 {
-    if depth == 0 ||  board.black.king.is_empty() {
+    if depth == 0 ||  board.black.king().is_empty() {
         board.score(Color::Black)
     } else {
         let mut side = BlackSide::new(board);

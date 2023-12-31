@@ -3,12 +3,12 @@ use crate::result::Result;
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Piece {
-    Pawn,
-    Bishop,
-    Knight,
-    Rook,
-    Queen,
-    King,
+    King = 0,
+    Queen = 1,
+    Rook = 2,
+    Bishop = 3,
+    Knight = 4,
+    Pawn = 5,
 }
 
 impl Piece {
@@ -33,6 +33,10 @@ impl Piece {
             Piece::Queen => 'q',
             Piece::King => 'k',
         }
+    }
+
+    pub fn to_usize(self) -> usize {
+        self as usize
     }
 
     pub fn can_promote_to(&self) -> bool {

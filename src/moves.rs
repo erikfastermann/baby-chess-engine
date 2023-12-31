@@ -350,18 +350,18 @@ impl Moves {
     pub fn without_pawns_castle(we: &PlayerBoard, enemy: &PlayerBoard) -> Self {
         let enemy_pieces = enemy.bitset();
         let all_pieces = we.bitset() | enemy_pieces;
-        we.queens.indices().map(|index| Moves::queen(all_pieces, index, enemy_pieces))
-            .chain(we.rooks.indices().map(|index| Moves::rook(all_pieces, index, enemy_pieces)))
-            .chain(we.bishops.indices().map(|index| Moves::bishop(all_pieces, index, enemy_pieces)))
-            .chain(we.knights.indices().map(|index| Moves::knight(all_pieces, index, enemy_pieces)))
-            .chain(we.king.indices().map(|index| Moves::king(all_pieces, index, enemy_pieces)))
+        we.queens().indices().map(|index| Moves::queen(all_pieces, index, enemy_pieces))
+            .chain(we.rooks().indices().map(|index| Moves::rook(all_pieces, index, enemy_pieces)))
+            .chain(we.bishops().indices().map(|index| Moves::bishop(all_pieces, index, enemy_pieces)))
+            .chain(we.knights().indices().map(|index| Moves::knight(all_pieces, index, enemy_pieces)))
+            .chain(we.king().indices().map(|index| Moves::king(all_pieces, index, enemy_pieces)))
             .fold(Moves::empty(), |a, b| a.combine(&b))
     }
 
     pub fn white_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Self {
         let enemy_pieces = enemy.bitset();
         let all_pieces = we.bitset() | enemy_pieces;
-        we.pawns.indices()
+        we.pawns().indices()
             .map(|index| Moves::white_pawn_without_en_passant(all_pieces, index, enemy_pieces))
             .fold(Moves::empty(), |a, b| a.combine(&b))
     }
@@ -369,7 +369,7 @@ impl Moves {
     pub fn black_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Self {
         let enemy_pieces = enemy.bitset();
         let all_pieces = we.bitset() | enemy_pieces;
-        we.pawns.indices()
+        we.pawns().indices()
             .map(|index| Moves::black_pawn_without_en_passant(all_pieces, index, enemy_pieces))
             .fold(Moves::empty(), |a, b| a.combine(&b))
     }

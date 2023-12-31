@@ -30,6 +30,12 @@ impl ops::BitOr for Bitset {
     }
 }
 
+impl ops::BitOrAssign for Bitset {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 impl ops::Not for Bitset {
     type Output = Self;
 

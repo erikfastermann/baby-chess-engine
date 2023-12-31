@@ -133,7 +133,7 @@ impl Game {
         let Some(en_passant_index) = side.board().en_passant_index else {
             return false;
         };
-        if !side.we().pawns.has(from) {
+        if !side.we().pawns().has(from) {
             return false;
         }
         let mov = Move::Normal { from, to };
@@ -149,8 +149,8 @@ impl Game {
         if !is_en_passant {
             return false;
         }
-        side.we_mut().pawns.mov(from, to);
-        side.enemy_mut().pawns.checked_clear(en_passant_index);
+        side.we_mut().pawns_mut().mov(from, to);
+        side.enemy_mut().pawns_mut().checked_clear(en_passant_index);
         true
     }
 
@@ -182,8 +182,8 @@ impl Game {
     }
 
     fn apply_move_promotion(side: &mut impl Side, piece: Piece, from: u8, to: u8) {
-        assert!(side.we().pawns.has(from));
-        side.we_mut().pawns.checked_clear(from);
+        assert!(side.we().pawns().has(from));
+        side.we_mut().pawns_mut().checked_clear(from);
         side.enemy_mut().captured(to);
         side.we_mut().place_piece(piece, to);
     }

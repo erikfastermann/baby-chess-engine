@@ -133,8 +133,8 @@ impl <'a> Side for BlackSide<'a> {
 pub fn castle_left_apply<S: Side>(side: &mut S) -> Move {
     let king_from = S::color().king_starting_index();
     let king_to = S::color().king_starting_index() - 2;
-    side.we_mut().king.mov(king_from, king_to);
-    side.we_mut().rooks.mov(
+    side.we_mut().king_mut().mov(king_from, king_to);
+    side.we_mut().rooks_mut().mov(
         S::color().rook_left_starting_index(),
         position_to_index(3, S::color().first_row(),
     ));
@@ -145,8 +145,8 @@ pub fn castle_left_apply<S: Side>(side: &mut S) -> Move {
 pub fn castle_right_apply<S: Side>(side: &mut S) -> Move {
     let king_from = S::color().king_starting_index();
     let king_to = S::color().king_starting_index() + 2;
-    side.we_mut().king.mov(king_from, king_to);
-    side.we_mut().rooks.mov(
+    side.we_mut().king_mut().mov(king_from, king_to);
+    side.we_mut().rooks_mut().mov(
         S::color().rook_right_starting_index(),
         position_to_index(5, S::color().first_row(),
     ));

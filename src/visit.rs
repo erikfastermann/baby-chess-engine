@@ -102,7 +102,7 @@ fn king<S: Side>(side: &mut S, visitor: &mut impl Visitor, old_enemy: &PlayerBoa
         side,
         visitor,
         old_enemy,
-        |player_board| &mut player_board.king,
+        |player_board| player_board.king_mut(),
         Moves::king,
     )
 }
@@ -112,7 +112,7 @@ fn knights<S: Side>(side: &mut S, visitor: &mut impl Visitor, old_enemy: &Player
         side,
         visitor,
         old_enemy,
-        |player_board| &mut player_board.knights,
+        |player_board| player_board.knights_mut(),
         Moves::knight,
     )
 }
@@ -122,7 +122,7 @@ fn bishops<S: Side>(side: &mut S, visitor: &mut impl Visitor, old_enemy: &Player
         side,
         visitor,
         old_enemy,
-        |player_board| &mut player_board.bishops,
+        |player_board| player_board.bishops_mut(),
         Moves::bishop,
     )
 }
@@ -132,7 +132,7 @@ fn rooks<S: Side>(side: &mut S, visitor: &mut impl Visitor, old_enemy: &PlayerBo
         side,
         visitor,
         old_enemy,
-        |player_board| &mut player_board.rooks,
+        |player_board| player_board.rooks_mut(),
         Moves::rook,
     )
 }
@@ -142,7 +142,7 @@ fn queens<S: Side>(side: &mut S, visitor: &mut impl Visitor, old_enemy: &PlayerB
         side,
         visitor,
         old_enemy,
-        |player_board| &mut player_board.queens,
+        |player_board| player_board.queens_mut(),
         Moves::queen,
     )
 }
@@ -163,25 +163,25 @@ fn castle<S: Side>(side: &mut S, visitor: &mut impl Visitor) -> bool {
 
 fn can_castle_right<S: Side>(side: &mut S) -> bool {
     let all_pieces = side.board().bitset();
-    let king_index = side.we().king.first_index();
+    let king_index = side.we().king().first_index();
 
     let king_starting_index = S::color().king_starting_index();
     let row = S::color().first_row();
 
     let allowed = king_index == king_starting_index
         && side.we().can_castle_right()
-        && side.we().rooks.has(S::color().rook_right_starting_index())
+        && side.we().rooks().has(S::color().rook_right_starting_index())
         && !all_pieces.has(position_to_index(5, row))
         && !all_pieces.has(position_to_index(6, row));
     if !allowed {
         return false;
     }
 
-    let we_old_king = side.we().king;
+    let we_old_king = side.we().king();
     for shift in 0..=2 {
-        side.we_mut().king.mov(king_starting_index, king_starting_index+shift);
+        side.we_mut().king_mut().mov(king_starting_index, king_starting_index+shift);
         let check = side.enemy().has_check(side.we(), S::color().other());
-        side.we_mut().king = we_old_king;
+        *side.we_mut().king_mut() = we_old_king;
         if check {
             return false;
         }
@@ -191,14 +191,14 @@ fn can_castle_right<S: Side>(side: &mut S) -> bool {
 
 fn can_castle_left<S: Side>(side: &mut S) -> bool {
     let all_pieces = side.we().bitset();
-    let king_index = side.we().king.first_index();
+    let king_index = side.we().king().first_index();
 
     let king_starting_index = S::color().king_starting_index();
     let row = S::color().first_row();
 
     let allowed = king_index == king_starting_index
         && side.we().can_castle_left()
-        && side.we().rooks.has(S::color().rook_left_starting_index())
+        && side.we().rooks().has(S::color().rook_left_starting_index())
         && !all_pieces.has(position_to_index(3, row))
         && !all_pieces.has(position_to_index(2, row))
         && !all_pieces.has(position_to_index(1, row));
@@ -206,11 +206,11 @@ fn can_castle_left<S: Side>(side: &mut S) -> bool {
         return false;
     }
 
-    let we_old_king = side.we().king;
+    let we_old_king = side.we().king();
     for shift in 0..=2 {
-        side.we_mut().king.mov(king_starting_index, king_starting_index-shift);
+        side.we_mut().king_mut().mov(king_starting_index, king_starting_index-shift);
         let check = side.enemy().has_check(side.we(), S::color().other());
-        side.we_mut().king = we_old_king;
+        *side.we_mut().king_mut() = we_old_king;
         if check {
             return false;
         }
@@ -225,14 +225,14 @@ fn castle_reset(
     we_old_rooks: Bitset,
 ) {
     side.we_mut().reset_castle(old_can_castle);
-    side.we_mut().king = we_old_king;
-    side.we_mut().rooks = we_old_rooks;
+    *side.we_mut().king_mut() = we_old_king;
+    *side.we_mut().rooks_mut() = we_old_rooks;
 }
 
 fn castle_right<S: Side>(side: &mut S, visitor: &mut impl Visitor) -> bool {
     let old_can_castle = side.we().can_castle;
-    let we_old_king = side.we().king;
-    let we_old_rooks = side.we().rooks;
+    let we_old_king = side.we().king();
+    let we_old_rooks = side.we().rooks();
     let mov = castle_right_apply(side);
     let cont = visitor.visit(side, mov);
     castle_reset(side, old_can_castle, we_old_king, we_old_rooks);
@@ -240,9 +240,9 @@ fn castle_right<S: Side>(side: &mut S, visitor: &mut impl Visitor) -> bool {
 }
 
 fn castle_left<S: Side>(side: &mut S, visitor: &mut impl Visitor) -> bool {
-    let old_can_castle = side.we_mut().can_castle;
-    let we_old_king = side.we_mut().king;
-    let we_old_rooks = side.we_mut().rooks;
+    let old_can_castle = side.we().can_castle;
+    let we_old_king = side.we().king();
+    let we_old_rooks = side.we().rooks();
     let mov = castle_left_apply(side);
     let cont = visitor.visit(side, mov);
     castle_reset(side, old_can_castle, we_old_king, we_old_rooks);
@@ -259,7 +259,7 @@ fn pawns<S: Side>(
         side,
         visitor,
         old_enemy,
-        |player_board| &mut player_board.pawns,
+        |player_board| player_board.pawns_mut(),
         S::pawn_normal_single_without_en_passant,
     );
     if !cont {
@@ -269,7 +269,7 @@ fn pawns<S: Side>(
     let cont = apply_moves_with(
         side,
         old_enemy,
-        |player_board| &mut player_board.pawns,
+        |player_board| player_board.pawns_mut(),
         S::pawn_double,
         |side, from, to| {
             side.board_mut().en_passant_index = Some(to);
@@ -285,10 +285,10 @@ fn pawns<S: Side>(
     let cont = apply_moves_with(
         side,
         old_enemy,
-        |player_board| &mut player_board.pawns,
+        |player_board| player_board.pawns_mut(),
         S::pawn_promotion,
         |side, from, to| {
-            side.we_mut().pawns.clear(to);
+            side.we_mut().pawns_mut().clear(to);
             pawn_promote_figures(side, visitor, from, to)
         },
     );
@@ -304,30 +304,30 @@ fn pawns<S: Side>(
 }
 
 fn pawn_promote_figures<S: Side>(side: &mut S, visitor: &mut impl Visitor, from: u8, to: u8) -> bool {
-    side.we_mut().queens.set(to);
+    side.we_mut().queens_mut().set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Queen, from, to });
-    side.we_mut().queens.clear(to);
+    side.we_mut().queens_mut().clear(to);
     if !cont {
         return false;
     }
 
-    side.we_mut().rooks.set(to);
+    side.we_mut().rooks_mut().set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Rook, from, to });
-    side.we_mut().rooks.clear(to);
+    side.we_mut().rooks_mut().clear(to);
     if !cont {
         return false;
     }
 
-    side.we_mut().knights.set(to);
+    side.we_mut().knights_mut().set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Knight, from, to });
-    side.we_mut().knights.clear(to);
+    side.we_mut().knights_mut().clear(to);
     if !cont {
         return false;
     }
 
-    side.we_mut().bishops.set(to);
+    side.we_mut().bishops_mut().set(to);
     let cont = visitor.visit(side, Move::Promotion { piece: Piece::Bishop, from, to });
-    side.we_mut().bishops.clear(to);
+    side.we_mut().bishops_mut().clear(to);
     cont
 }
 
@@ -339,10 +339,10 @@ fn en_passant_single<S: Side>(
     from: u8,
     to: u8,
 ) -> bool {
-    side.enemy_mut().pawns.clear(captured);
-    side.we_mut().pawns.mov(from, to);
+    side.enemy_mut().pawns_mut().clear(captured);
+    side.we_mut().pawns_mut().mov(from, to);
     let cont = visitor.visit(side, Move::Normal { from, to });
-    side.we_mut().pawns.mov(to, from);
+    side.we_mut().pawns_mut().mov(to, from);
     *side.enemy_mut() = *old_enemy;
     cont
 }
