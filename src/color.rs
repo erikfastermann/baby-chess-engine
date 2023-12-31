@@ -14,13 +14,6 @@ impl Color {
         }
     }
 
-    pub fn direction(&self) -> i8 {
-        match self {
-            Color::White => -1,
-            Color::Black => 1,
-        }
-    }
-
     pub fn king_starting_index(&self) -> u8 {
         match self {
             Color::White => position::WHITE_KING_STARTING_INDEX,

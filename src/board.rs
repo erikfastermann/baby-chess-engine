@@ -276,7 +276,6 @@ impl Board {
     pub fn fill_special_moves<'a>(
         &mut self,
         color: Color,
-        en_passant_index: Option<u8>,
         buffer: &'a mut SpecialMovesBuffer,
     ) -> &'a [Move] {
         let all_pieces = self.bitset();
@@ -304,7 +303,7 @@ impl Board {
             builder.push_move(Move::castle_right(color));
         }
 
-        if let Some(en_passant_index) = en_passant_index {
+        if let Some(en_passant_index) = self.en_passant_index {
             self.fill_en_passant(color, en_passant_index, &mut builder);
         }
 
@@ -670,11 +669,6 @@ impl PlayerBoard {
         self.can_castle.right = false;
     }
 
-    pub fn reset_castle(&mut self, old: CanCastle) {
-        self.can_castle.left = old.left;
-        self.can_castle.right = old.right;
-    }
-
     pub fn fill_piece_board(&self, piece_board: &mut PieceBoard) {
         for index in self.pawns().indices() {
             piece_board[index as usize] = Piece::Pawn;
@@ -888,7 +882,7 @@ mod tests {
     fn count_moves_single(board: &mut Board, color: Color) -> usize {
         let special_moves_count = {
             let mut special_moves_buffer = [Move::Normal { from: 0, to: 0 }; SPECIAL_MOVES_BUFFER_LEN];
-            board.fill_special_moves(color, board.en_passant_index, &mut special_moves_buffer).len()
+            board.fill_special_moves(color, &mut special_moves_buffer).len()
         };
 
         let simple_moves_count = {
