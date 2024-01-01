@@ -45,8 +45,6 @@ impl Game {
         moves.extend(next_game.filter_simple(self, simple_moves));
         moves.extend(next_game.filter_simple(self, simple_captures));
 
-        dbg!(&moves);
-        dbg!(&self.board);
         moves
     }
 

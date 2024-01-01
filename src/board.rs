@@ -1,9 +1,6 @@
 use std::fmt;
 
-use crate::{piece::{Piece, PROMOTION_PIECES}, bitset::{Bitset, ROW_0, ROW_7}, position::{self, index_to_position, position_to_index}, color::Color, config, moves::{Moves, SimpleMovesBuffer, SimpleMoves, SpecialMovesBuffer}, mov::Move};
-
-// TODO: non piece repr
-type PieceBoard = [Piece; 64];
+use crate::{piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, bitset::{Bitset, ROW_0, ROW_7}, position::{index_to_position, position_to_index}, color::Color, config, moves::{Moves, SimpleMovesBuffer, SimpleMoves, SpecialMovesBuffer}, mov::Move};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Board {
@@ -45,42 +42,36 @@ impl fmt::Debug for Board {
 // Currently we still calculate castling moves
 // even if they are not strictly allowed.
 impl Board {
-    pub fn start() -> Self {      
+    pub fn start() -> Self {
         let mut board = Self {
             white: PlayerBoard {
-                bitsets: [Bitset::zero(); 6],
+                bitsets: [Bitset::zero(); 7],
                 can_castle: CanCastle {
                     left: true,
                     right: true,
                 },
+                piece_board: [
+                    STARTING_EMPTY_SQUARES.as_slice(),
+                    STARTING_PAWNS.as_slice(),
+                    STARTING_PIECES_FIRST_RANK.as_slice(),
+                ].concat().try_into().unwrap(),
             },
             black: PlayerBoard {
-                bitsets: [Bitset::zero(); 6],
+                bitsets: [Bitset::zero(); 7],
                 can_castle: CanCastle {
                     left: true,
                     right: true,
                 },
+                piece_board: [
+                    STARTING_PIECES_FIRST_RANK.as_slice(),
+                    STARTING_PAWNS.as_slice(),
+                    STARTING_EMPTY_SQUARES.as_slice(),
+                ].concat().try_into().unwrap(),
             },
             en_passant_index: None,
         };
-
-        *board.white.rooks_mut() = Bitset::from_index(position::WHITE_ROOK_LEFT_STARTING_INDEX)
-            | Bitset::from_index(position::WHITE_ROOK_RIGHT_STARTING_INDEX);
-        *board.white.knights_mut() = Bitset::from_position(1, 7) | Bitset::from_position(6, 7);
-        *board.white.bishops_mut() = Bitset::from_position(2, 7) | Bitset::from_position(5, 7);
-        *board.white.queens_mut() = Bitset::from_position(3, 7);
-        *board.white.king_mut() = Bitset::from_index(position::WHITE_KING_STARTING_INDEX);
-        *board.white.pawns_mut() = (0..8).map(|x| Bitset::from_position(x, 6))
-            .fold(Bitset::zero(), |pawns, pawn| pawns | pawn);
-
-        *board.black.rooks_mut() = Bitset::from_index(position::BLACK_ROOK_LEFT_STARTING_INDEX)
-            | Bitset::from_index(position::BLACK_ROOK_RIGHT_STARTING_INDEX);
-        *board.black.knights_mut() = Bitset::from_position(1, 0) | Bitset::from_position(6, 0);
-        *board.black.bishops_mut() = Bitset::from_position(2, 0) | Bitset::from_position(5, 0);
-        *board.black.queens_mut() = Bitset::from_position(3, 0);
-        *board.black.king_mut() = Bitset::from_index(position::BLACK_KING_STARTING_INDEX);
-        *board.black.pawns_mut() = (0..8).map(|x| Bitset::from_position(x, 1))
-            .fold(Bitset::zero(), |pawns, pawn| pawns | pawn);
+        board.white.fill_bitsets();
+        board.black.fill_bitsets();
 
         board.debug_check();
         board
@@ -169,10 +160,9 @@ impl Board {
         } else if self.apply_move_castle(color, from, to) {
             None
         } else {
-            let piece = self.player_board(color).which_piece(from).unwrap();
-            self.player_board_mut(color).remove_piece(piece, from);
-            self.player_board_mut(color.other()).captured(to);
-            self.player_board_mut(color).place_piece(piece, to);
+            let piece = self.player_board(color).which_piece(from);
+            self.player_board_mut(color).move_piece(from, to);
+            self.player_board_mut(color.other()).set_piece_none(to);
 
             self.disable_castle(color, from, to);
             Self::possible_en_passant(piece, from, to)
@@ -199,8 +189,8 @@ impl Board {
         if !is_en_passant {
             return false;
         }
-        self.player_board_mut(color).pawns_mut().mov(from, to);
-        self.player_board_mut(color.other()).pawns_mut().checked_clear(en_passant_index);
+        self.player_board_mut(color).move_piece(from, to);
+        self.player_board_mut(color.other()).remove_piece(en_passant_index);
         true
     }
 
@@ -234,8 +224,8 @@ impl Board {
     fn castle_left_apply(&mut self, color: Color) {
         let king_from = color.king_starting_index();
         let king_to = color.king_starting_index() - 2;
-        self.player_board_mut(color).king_mut().mov(king_from, king_to);
-        self.player_board_mut(color).rooks_mut().mov(
+        self.player_board_mut(color).move_piece(king_from, king_to);
+        self.player_board_mut(color).move_piece(
             color.rook_left_starting_index(),
             position_to_index(3, color.first_row(),
         ));
@@ -245,8 +235,8 @@ impl Board {
     fn castle_right_apply(&mut self, color: Color) {
         let king_from = color.king_starting_index();
         let king_to = color.king_starting_index() + 2;
-        self.player_board_mut(color).king_mut().mov(king_from, king_to);
-        self.player_board_mut(color).rooks_mut().mov(
+        self.player_board_mut(color).move_piece(king_from, king_to);
+        self.player_board_mut(color).move_piece(
             color.rook_right_starting_index(),
             position_to_index(5, color.first_row(),
         ));
@@ -255,9 +245,9 @@ impl Board {
 
     fn apply_move_promotion(&mut self, color: Color, piece: Piece, from: u8, to: u8) {
         debug_assert!(self.player_board(color).pawns().has(from));
-        self.player_board_mut(color).pawns_mut().checked_clear(from);
-        self.player_board_mut(color.other()).captured(to);
-        self.player_board_mut(color).place_piece(piece, to);
+        self.player_board_mut(color).remove_piece(from);
+        self.player_board_mut(color.other()).set_piece_none(to);
+        self.player_board_mut(color).place_piece(to, piece);
     }
 
     fn possible_en_passant(piece: Piece, from: u8, to: u8) -> Option<u8> {
@@ -326,12 +316,12 @@ impl Board {
             return false;
         }
     
-        let we_old_king = self.player_board(color).king();
         for shift in 0..=2 {
-            self.player_board_mut(color).king_mut().mov(king_starting_index, king_starting_index+shift);
+            let (from, to) = (king_starting_index, king_starting_index+shift);
+            self.player_board_mut(color).move_piece(from, to);
             let check = self.player_board(color.other())
                 .has_check(self.player_board(color), color.other());
-            *self.player_board_mut(color).king_mut() = we_old_king;
+            self.player_board_mut(color).move_piece(to, from);
             if check {
                 return false;
             }
@@ -356,12 +346,12 @@ impl Board {
             return false;
         }
     
-        let we_old_king = self.player_board(color).king();
         for shift in 0..=2 {
-            self.player_board_mut(color).king_mut().mov(king_starting_index, king_starting_index-shift);
+            let (from, to) = (king_starting_index, king_starting_index-shift);
+            self.player_board_mut(color).move_piece(from, to);
             let check = self.player_board(color.other())
                 .has_check(self.player_board(color), color.other());
-            *self.player_board_mut(color).king_mut() = we_old_king;
+            self.player_board_mut(color).move_piece(to, from);
             if check {
                 return false;
             }
@@ -444,7 +434,8 @@ impl <'a> SpecialMovesBuilder<'a> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlayerBoard {
-    bitsets: [Bitset; 6],
+    bitsets: [Bitset; 7],
+    piece_board: [Piece; 64], // TODO: could be packed smaller
     pub can_castle: CanCastle,
 }
 
@@ -460,55 +451,41 @@ impl PlayerBoard {
         self.bitsets[Piece::Pawn.to_usize()]
     }
 
-    pub fn pawns_mut(&mut self) -> &mut Bitset {
-        &mut self.bitsets[Piece::Pawn.to_usize()]
-    }
-
     pub fn bishops(&self) -> Bitset {
         self.bitsets[Piece::Bishop.to_usize()]
-    }
-
-    pub fn bishops_mut(&mut self) -> &mut Bitset {
-        &mut self.bitsets[Piece::Bishop.to_usize()]
     }
 
     pub fn knights(&self) -> Bitset {
         self.bitsets[Piece::Knight.to_usize()]
     }
 
-    pub fn knights_mut(&mut self) -> &mut Bitset {
-        &mut self.bitsets[Piece::Knight.to_usize()]
-    }
-
     pub fn rooks(&self) -> Bitset {
         self.bitsets[Piece::Rook.to_usize()]
-    }
-
-    pub fn rooks_mut(&mut self) -> &mut Bitset {
-        &mut self.bitsets[Piece::Rook.to_usize()]
     }
 
     pub fn queens(&self) -> Bitset {
         self.bitsets[Piece::Queen.to_usize()]
     }
 
-    pub fn queens_mut(&mut self) -> &mut Bitset {
-        &mut self.bitsets[Piece::Queen.to_usize()]
-    }
-
     pub fn king(&self) -> Bitset {
         self.bitsets[Piece::King.to_usize()]
     }
 
-    pub fn king_mut(&mut self) -> &mut Bitset {
-        &mut self.bitsets[Piece::King.to_usize()]
-    }
-
-    pub fn piece_mut(&mut self, piece: Piece) -> &mut Bitset {
+    fn piece_mut(&mut self, piece: Piece) -> &mut Bitset {
         &mut self.bitsets[piece.to_usize()]
     }
 
+    pub fn which_piece(&self, index: u8) -> Piece {
+        self.piece_board[index as usize]
+    }
+
+    fn piece_board_set(&mut self, index: u8, piece: Piece) {
+        self.piece_board[index as usize] = piece;
+    }
+
     fn debug_check(&self) {
+        debug_assert_eq!(self.bitsets[Piece::None.to_usize()].count(), 0);
+
         let count = self.pawns().count()
             + self.bishops().count()
             + self.knights().count()
@@ -523,6 +500,32 @@ impl PlayerBoard {
         debug_assert_eq!(self.king().count(), 1);
         debug_assert!(self.pawns().count() <= 8);
         debug_assert!(self.bitset().count() <= 16);
+
+        self.debug_check_piece_board();
+    }
+
+    fn debug_check_piece_board(&self) {
+        if cfg!(debug_assertions) {
+            let bitset_piece = [
+                (self.pawns(), Piece::Pawn),
+                (self.knights(), Piece::Knight),
+                (self.bishops(), Piece::Bishop),
+                (self.rooks(), Piece::Rook),
+                (self.queens(), Piece::Queen),
+                (self.king(), Piece::King),
+            ];
+            for (bitset, piece) in bitset_piece {
+                let bitset_matches_piece_board = bitset
+                    .indices()
+                    .all(|index| self.which_piece(index) == piece);
+                debug_assert!(bitset_matches_piece_board);
+                let piece_board_matches_bitset = self.piece_board.iter()
+                    .enumerate()
+                    .filter(|(_, current_piece)| **current_piece == piece)
+                    .all(|(index, _)| bitset.has(index.try_into().unwrap()));
+                debug_assert!(piece_board_matches_bitset);
+            }
+        }
     }
 
     pub fn bitset(&self) -> Bitset {
@@ -533,10 +536,30 @@ impl PlayerBoard {
         bitset
     }
 
-    pub fn captured(&mut self, index: u8) {
-        for i in 0..self.bitsets.len() {
-            self.bitsets[i].clear(index);
-        }
+    pub fn move_piece(&mut self, from: u8, to: u8) {
+        let piece = self.which_piece(from);
+        debug_assert_ne!(piece, Piece::None);
+        self.piece_mut(piece).mov(from, to);
+        self.piece_board_set(from, Piece::None);
+        debug_assert_eq!(self.which_piece(to), Piece::None);
+        self.piece_board_set(to, piece);
+    }
+
+    pub fn remove_piece(&mut self, index: u8) {
+        debug_assert_ne!(self.which_piece(index), Piece::None);
+        self.set_piece_none(index);
+    }
+
+    pub fn set_piece_none(&mut self, index: u8) {
+        let piece = self.which_piece(index);
+        self.piece_mut(piece).clear(index);
+        self.piece_board_set(index, Piece::None);
+    }
+
+    pub fn place_piece(&mut self, index: u8, piece: Piece) {
+        debug_assert_eq!(self.which_piece(index), Piece::None);
+        self.piece_mut(piece).set(index);
+        self.piece_board_set(index, piece);
     }
 
     fn score(&self, tables: &PieceSquareTables, is_end_game: bool) -> i32 {
@@ -568,46 +591,6 @@ impl PlayerBoard {
             + self.king().count() * config::SCORE_KING;
 
         position + material
-    }
-
-    pub fn which_piece(&self, index: u8) -> Option<Piece> {
-        if self.pawns().has(index) {
-            Some(Piece::Pawn)
-        } else if self.bishops().has(index) {
-            Some(Piece::Bishop)
-        } else if self.knights().has(index) {
-            Some(Piece::Knight)
-        } else if self.rooks().has(index) {
-            Some(Piece::Rook)
-        } else if self.queens().has(index) {
-            Some(Piece::Queen)
-        } else if self.king().has(index) {
-            Some(Piece::King)
-        } else {
-            None
-        }
-    }
-
-    pub fn remove_piece(&mut self, piece: Piece, index: u8) {
-        match piece {
-            Piece::Pawn => self.pawns_mut().checked_clear(index),
-            Piece::Bishop => self.bishops_mut().checked_clear(index),
-            Piece::Knight => self.knights_mut().checked_clear(index),
-            Piece::Rook => self.rooks_mut().checked_clear(index),
-            Piece::Queen => self.queens_mut().checked_clear(index),
-            Piece::King => self.king_mut().checked_clear(index),
-        }
-    }
-
-    pub fn place_piece(&mut self, piece: Piece, index: u8) {
-        match piece {
-            Piece::Pawn => self.pawns_mut().checked_set(index),
-            Piece::Bishop => self.bishops_mut().checked_set(index),
-            Piece::Knight => self.knights_mut().checked_set(index),
-            Piece::Rook => self.rooks_mut().checked_set(index),
-            Piece::Queen => self.queens_mut().checked_set(index),
-            Piece::King => self.king_mut().checked_set(index),
-        }
     }
 
     pub fn has_check(&self, enemy: &Self, self_color: Color) -> bool {
@@ -669,24 +652,12 @@ impl PlayerBoard {
         self.can_castle.right = false;
     }
 
-    pub fn fill_piece_board(&self, piece_board: &mut PieceBoard) {
-        for index in self.pawns().indices() {
-            piece_board[index as usize] = Piece::Pawn;
-        }
-        for index in self.knights().indices() {
-            piece_board[index as usize] = Piece::Knight;
-        }
-        for index in self.bishops().indices() {
-            piece_board[index as usize] = Piece::Bishop;
-        }
-        for index in self.rooks().indices() {
-            piece_board[index as usize] = Piece::Rook;
-        }
-        for index in self.queens().indices() {
-            piece_board[index as usize] = Piece::Queen;
-        }
-        for index in self.king().indices() {
-            piece_board[index as usize] = Piece::King;
+    fn fill_bitsets(&mut self) {
+        for index in 0..64 {
+            let piece = self.which_piece(index);
+            if piece != Piece::None {
+                self.piece_mut(piece).set(index);
+            }
         }
     }
 
@@ -908,8 +879,8 @@ mod tests {
 
         let black_queen = board.black.queens().first_index();
         let white_queen = board.white.queens().first_index();
-        board.black.queens_mut().mov(black_queen, white_queen);
-        board.white.captured(board.white.queens().first_index());
+        board.black.move_piece(black_queen, white_queen);
+        board.white.remove_piece(white_queen);
         assert!(!board.white.has_check(&board.black, Color::White));
         assert!(board.black.has_check(&board.white, Color::Black));
     }

@@ -7,15 +7,25 @@ pub static PROMOTION_PIECES: [Piece; 4] = [
     Piece::Bishop,
 ];
 
+pub static STARTING_EMPTY_SQUARES: [Piece; 48] = [Piece::None; 48];
+
+pub static STARTING_PAWNS: [Piece; 8] = [Piece::Pawn; 8];
+
+pub static STARTING_PIECES_FIRST_RANK: [Piece; 8] = {
+    use Piece::*;
+    [Rook, Knight, Bishop, Queen, King, Bishop, Knight, Rook]
+};
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Piece {
-    King = 0,
-    Queen = 1,
-    Rook = 2,
-    Bishop = 3,
-    Knight = 4,
-    Pawn = 5,
+    None = 0,
+    King = 1,
+    Queen = 2,
+    Rook = 3,
+    Bishop = 4,
+    Knight = 5,
+    Pawn = 6,
 }
 
 impl Piece {
@@ -39,6 +49,7 @@ impl Piece {
             Piece::Rook => 'r',
             Piece::Queen => 'q',
             Piece::King => 'k',
+            Piece::None => '.',
         }
     }
 
