@@ -1,6 +1,6 @@
 use std::cmp::max;
 
-use crate::{board::Board, moves::FullMovesBuffer, piece::Piece};
+use crate::{board::Board, moves::FullMovesBuffer};
 
 pub fn search(board: &mut Board, depth: usize, mut alpha: i32, beta: i32) -> i32 {
     if depth == 0 || board.we().king().is_empty() {
@@ -33,19 +33,9 @@ pub fn search(board: &mut Board, depth: usize, mut alpha: i32, beta: i32) -> i32
     board.en_passant_index = None;
 
     for (from, to) in moves.simple {
-        board.we_mut().move_piece(*from, *to);
-        let captured_piece = board.enemy().which_piece(*to);
-        board.enemy_mut().set_piece_none(*to);
-
-        board.color = board.color.other();
+        let captured_piece = board.apply_simple(*from, *to);
         let score = -search(board, depth - 1, -beta, -alpha);
-        board.color = board.color.other();
-
-        if captured_piece != Piece::None {
-            board.enemy_mut().place_piece(*to, captured_piece);
-        }
-        board.we_mut().move_piece(*to, *from);
-
+        board.un_apply_simple(*from, *to, captured_piece);
         if score >= beta {
             board.en_passant_index = en_passant_index;
             return beta;

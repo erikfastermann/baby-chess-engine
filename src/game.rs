@@ -149,6 +149,47 @@ mod test {
     use super::*;
 
     #[test]
+    fn test_move_counts_start() {
+        unsafe { init() };
+
+        static SEARCH_COUNTS: &[u64] = &[
+            1,
+            20,
+            400,
+            8_902,
+            197_281,
+        ];
+
+        let game = Game::new();
+        let mut found_boards = HashMap::new();
+        for (depth, expected_count) in SEARCH_COUNTS.iter().copied().enumerate() {
+            found_boards.clear();
+            let count = count_moves(&game, depth, &mut found_boards);
+            assert_eq!(count, expected_count);
+            assert_eq!(
+                found_boards.values().sum::<u64>(),
+                expected_count,
+            );
+        }
+    }
+
+    fn count_moves(game: &Game, depth: usize, found_boards: &mut HashMap<Board, u64>) -> u64 {
+        if depth == 0 {
+            *found_boards.entry(game.board.clone()).or_insert(0) += 1;
+            return 1;
+        }
+
+        let mut next_game = game.clone();
+        let mut count = 0;
+        for mov in game.legal_moves() {
+            next_game.apply_move_unchecked(mov);
+            count += count_moves(&next_game, depth - 1, found_boards);
+            next_game.reset_with(game);
+        }
+        count
+    }
+
+    #[test]
     fn test_moves_start() {
         unsafe { init() };
 

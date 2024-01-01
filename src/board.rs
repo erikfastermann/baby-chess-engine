@@ -163,6 +163,24 @@ impl Board {
         self.en_passant_index = old.en_passant_index;
     }
 
+    pub fn apply_simple(&mut self, from: u8, to: u8) -> Piece {
+        debug_assert_eq!(self.en_passant_index, None);
+        self.we_mut().move_piece(from, to);
+        let captured_piece = self.enemy().which_piece(to);
+        self.enemy_mut().set_piece_none(to);
+        self.color = self.color.other();
+        captured_piece
+    }
+
+    pub fn un_apply_simple(&mut self, from: u8, to: u8, captured_piece: Piece) {
+        debug_assert_eq!(self.en_passant_index, None);
+        self.color = self.color.other();
+        if captured_piece != Piece::None {
+            self.enemy_mut().place_piece(to, captured_piece);
+        }
+        self.we_mut().move_piece(to, from);
+    }
+
     pub fn apply_move_unchecked(&mut self, mov: Move) {
         self.en_passant_index = match mov {
             Move::Normal { from, to } => self.apply_move_normal(from, to),
@@ -851,25 +869,9 @@ fn reverse_piece_square_tables(tables: &mut PieceSquareTables) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{init::init, moves::FullMovesBuffer};
+    use crate::init::init;
 
     use super::*;
-
-    // TODO: recursive
-
-    #[test]
-    fn test_count_moves_start() {
-        unsafe { init() };
-
-        let mut board = Board::start();
-        assert_eq!(20, count_moves_single(&mut board));
-    }
-
-    fn count_moves_single(board: &mut Board) -> usize {
-        let mut moves_buffer = FullMovesBuffer::new();
-        let moves = moves_buffer.fill(board);
-        moves.simple.len() + moves.special.len()
-    }
 
     #[test]
     fn test_has_check() {
