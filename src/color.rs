@@ -1,4 +1,4 @@
-use crate::{mov::Move, position};
+use crate::position;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Color {
@@ -39,20 +39,6 @@ impl Color {
         match self {
             Color::White => position::WHITE_ROOK_RIGHT_STARTING_INDEX,
             Color::Black => position::BLACK_ROOK_RIGHT_STARTING_INDEX,
-        }
-    }
-
-    pub fn en_passant_left(&self, en_passant_index: u8) -> Option<Move> {
-        match self {
-            Color::White => Move::white_en_passant_left(en_passant_index),
-            Color::Black => Move::black_en_passant_left(en_passant_index),
-        }
-    }
-
-    pub fn en_passant_right(&self, en_passant_index: u8) -> Option<Move> {
-        match self {
-            Color::White => Move::white_en_passant_right(en_passant_index),
-            Color::Black => Move::black_en_passant_right(en_passant_index),
         }
     }
 }

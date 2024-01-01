@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt, error};
 
-use crate::{board::Board, color::Color, mov::Move, search, config, result::Result, moves::{SPECIAL_MOVES_BUFFER_LEN, SIMPLE_MOVES_BUFFER_LEN}};
+use crate::{board::Board, color::Color, mov::Move, search, config, result::Result, moves::FullMovesBuffer};
 
 const SCORE_MIN: i32 = i32::MAX * -1;
 const SCORE_MAX: i32 = i32::MAX;
@@ -28,24 +28,21 @@ impl Game {
 
     fn legal_moves(&self) -> Vec<Move> {
         let mut next_game = self.clone();
-        let mut moves = Vec::new();
+        let mut legal_moves = Vec::new();
 
-        let mut special_moves_buffer = [Move::Normal { from: 0, to: 0 }; SPECIAL_MOVES_BUFFER_LEN];
-        let special_moves = next_game.board.fill_special_moves(self.next_move_color, &mut special_moves_buffer)
-            .iter()
+        let mut moves_buffer = FullMovesBuffer::new();
+        let moves = moves_buffer.fill(&mut next_game.board, self.next_move_color);
+
+        let special = moves.special.iter()
             .filter(|mov| !next_game.unchecked_move_has_check_or_repetition(self, **mov));
-        moves.extend(special_moves);
+        legal_moves.extend(special);
 
-        let mut simple_moves_buffer = [(0, 0); SIMPLE_MOVES_BUFFER_LEN];
-        let (simple_moves, simple_captures) = self.board.player_board(self.next_move_color).fill_simple_moves(
-            self.board.player_board(self.next_move_color.other()),
-            self.next_move_color,
-            &mut simple_moves_buffer,
-        );
-        moves.extend(next_game.filter_simple(self, simple_moves));
-        moves.extend(next_game.filter_simple(self, simple_captures));
+        let simple = moves.simple.iter()
+            .map(|(from, to)| Move::Normal { from: *from, to: *to })
+            .filter(|mov| !next_game.unchecked_move_has_check_or_repetition(self, *mov));
+        legal_moves.extend(simple);
 
-        moves
+        legal_moves
     }
 
     fn unchecked_move_has_check_or_repetition(&mut self, old: &Self, mov: Move) -> bool {
@@ -54,12 +51,6 @@ impl Game {
             || self.full_position_counts.get(&self.board).is_some_and(|count| *count >= 3);
         self.reset_with(old);
         has_check_or_repetition
-    }
-
-    fn filter_simple<'a>(&'a mut self, old: &'a Self, simple: &'a [(u8, u8)]) -> impl Iterator<Item = Move> + 'a {
-        simple.iter()
-            .map(|(from, to)| Move::Normal { from: *from, to: *to })
-            .filter(|mov| !self.unchecked_move_has_check_or_repetition(old, *mov))
     }
 
     pub fn reset(&mut self) {

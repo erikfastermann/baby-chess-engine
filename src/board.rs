@@ -177,10 +177,10 @@ impl Board {
             return false;
         }
         let mov = Move::Normal { from, to };
-        let is_en_passant = if Some(mov) == color.en_passant_left(en_passant_index) {
+        let is_en_passant = if Some(mov) == Move::en_passant_left(color, en_passant_index) {
             debug_assert!(self.player_board(color).has_en_passant_left(self.player_board(color.other()), en_passant_index));
             true
-        } else if Some(mov) == color.en_passant_right(en_passant_index) {
+        } else if Some(mov) == Move::en_passant_right(color, en_passant_index) {
             debug_assert!(self.player_board(color).has_en_passant_right(self.player_board(color.other()), en_passant_index));
             true
         } else {
@@ -267,7 +267,7 @@ impl Board {
         &mut self,
         color: Color,
         buffer: &'a mut SpecialMovesBuffer,
-    ) -> &'a [Move] {
+    ) -> &'a mut [Move] {
         let all_pieces = self.bitset();
         let enemy_pieces = self.player_board(color.other()).bitset();
 
@@ -366,19 +366,11 @@ impl Board {
         builder: &mut SpecialMovesBuilder,
     ) {
         if self.player_board(color).has_en_passant_left(self.player_board(color.other()), en_passant_index) {
-            let mov = match color {
-                Color::White => Move::white_en_passant_left(en_passant_index),
-                Color::Black => Move::black_en_passant_left(en_passant_index),
-            };
-            builder.push_move(mov.unwrap());
+            builder.push_move(Move::en_passant_left(color, en_passant_index).unwrap());
         }
 
         if self.player_board(color).has_en_passant_right(self.player_board(color.other()), en_passant_index) {
-            let mov = match color {
-                Color::White => Move::white_en_passant_right(en_passant_index),
-                Color::Black => Move::black_en_passant_right(en_passant_index),
-            };
-            builder.push_move(mov.unwrap());
+            builder.push_move(Move::en_passant_right(color, en_passant_index).unwrap());
         }
     }
 }
@@ -427,8 +419,8 @@ impl <'a> SpecialMovesBuilder<'a> {
         }
     }
 
-    fn to_slice(self) -> &'a [Move] {
-        &self.buffer[..self.index]
+    fn to_slice(self) -> &'a mut [Move] {
+        &mut self.buffer[..self.index]
     }
 }
 
@@ -545,19 +537,20 @@ impl PlayerBoard {
         self.piece_board_set(to, piece);
     }
 
-    pub fn remove_piece(&mut self, index: u8) {
-        debug_assert_ne!(self.which_piece(index), Piece::None);
-        self.set_piece_none(index);
-    }
-
     pub fn set_piece_none(&mut self, index: u8) {
         let piece = self.which_piece(index);
         self.piece_mut(piece).clear(index);
         self.piece_board_set(index, Piece::None);
     }
 
+    pub fn remove_piece(&mut self, index: u8) {
+        debug_assert_ne!(self.which_piece(index), Piece::None);
+        self.set_piece_none(index);
+    }
+
     pub fn place_piece(&mut self, index: u8, piece: Piece) {
         debug_assert_eq!(self.which_piece(index), Piece::None);
+        debug_assert_ne!(piece, Piece::None);
         self.piece_mut(piece).set(index);
         self.piece_board_set(index, piece);
     }
@@ -665,12 +658,12 @@ impl PlayerBoard {
         &self,
         enemy: &Self,
         we_color: Color,
-        from_to: &'a mut SimpleMovesBuffer,
-    ) -> (&'a SimpleMoves, &'a SimpleMoves) {
+        buffer: &'a mut SimpleMovesBuffer,
+    ) -> &'a mut SimpleMoves {
         let enemy_pieces = enemy.bitset();
         let all_pieces = self.bitset() | enemy_pieces;
 
-        let mut builder = SimpleMovesBuilder::new(from_to);
+        let mut builder = SimpleMovesBuilder::new(buffer);
 
         for from in self.pawns().indices() {
             match we_color {
@@ -701,40 +694,36 @@ impl PlayerBoard {
             Moves::king(all_pieces, self.king().first_index(), enemy_pieces),
         );
     
-        builder.to_moves_captures_slice()
+        builder.to_slice()
     }
 }
 
 struct SimpleMovesBuilder<'a> {
-    from_to: &'a mut SimpleMovesBuffer,
-    moves_index: usize,
-    captures_index: usize,
+    buffer: &'a mut SimpleMovesBuffer,
+    index: usize,
 }
 
 impl <'a> SimpleMovesBuilder<'a> {
-    fn new(from_to: &'a mut SimpleMovesBuffer) -> Self {
-        let len = from_to.len();
+    fn new(buffer: &'a mut SimpleMovesBuffer) -> Self {
         Self {
-            from_to,
-            moves_index: 0,
-            captures_index: len - 1,
+            buffer,
+            index: 0,
         }
     }
 
     fn push(&mut self, from: u8, moves: Moves) {
         for to in moves.moves.indices() {
-            self.from_to[self.moves_index] = (from, to);
-            self.moves_index += 1;
+            self.buffer[self.index] = (from, to);
+            self.index += 1;
         }
         for to in moves.captures.indices() {
-            self.from_to[self.captures_index] = (from, to);
-            self.captures_index -= 1;
+            self.buffer[self.index] = (from, to);
+            self.index += 1;
         }
     }
 
-    fn to_moves_captures_slice(self) -> (&'a SimpleMoves, &'a SimpleMoves) {
-        assert!(self.moves_index <= self.captures_index);
-        (&self.from_to[..self.moves_index], &self.from_to[self.captures_index+1..])
+    fn to_slice(self) -> &'a mut SimpleMoves {
+        &mut self.buffer[..self.index]
     }
 }
 
@@ -836,7 +825,7 @@ fn reverse_piece_square_tables(tables: &mut PieceSquareTables) {
 
 #[cfg(test)]
 mod tests {
-    use crate::{init::init, moves::{SPECIAL_MOVES_BUFFER_LEN, SIMPLE_MOVES_BUFFER_LEN}};
+    use crate::{init::init, moves::FullMovesBuffer};
 
     use super::*;
 
@@ -851,22 +840,9 @@ mod tests {
     }
 
     fn count_moves_single(board: &mut Board, color: Color) -> usize {
-        let special_moves_count = {
-            let mut special_moves_buffer = [Move::Normal { from: 0, to: 0 }; SPECIAL_MOVES_BUFFER_LEN];
-            board.fill_special_moves(color, &mut special_moves_buffer).len()
-        };
-
-        let simple_moves_count = {
-            let mut simple_moves_buffer = [(0, 0); SIMPLE_MOVES_BUFFER_LEN];
-            let (simple_moves, simple_captures) = board.player_board(color).fill_simple_moves(
-                board.player_board(color.other()),
-                color,
-                &mut simple_moves_buffer,
-            );
-            simple_moves.len() + simple_captures.len()
-        };
-
-        special_moves_count + simple_moves_count
+        let mut moves_buffer = FullMovesBuffer::new();
+        let moves = moves_buffer.fill(board, color);
+        moves.simple.len() + moves.special.len()
     }
 
     #[test]

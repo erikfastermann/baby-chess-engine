@@ -36,52 +36,35 @@ impl Move {
         }
     }
 
-    // TODO: refactor using color
-
-    pub fn white_en_passant_left(en_passant_index: u8) -> Option<Self> {
+    pub fn en_passant_left(color: Color, en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
+        debug_assert!(y == 3 || y == 4);
         if x == 0 {
             None
         } else {
+            let next_y = match color {
+                Color::White => y - 1,
+                Color::Black => y + 1,
+            };
             Some(Self::Normal {
                 from: position_to_index(x-1, y),
-                to: position_to_index(x, y-1),
+                to: position_to_index(x, next_y),
             })
         }
     }
 
-    pub fn white_en_passant_right(en_passant_index: u8) -> Option<Self> {
+    pub fn en_passant_right(color: Color, en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
         if x == 7 {
             None
         } else {
+            let next_y = match color {
+                Color::White => y - 1,
+                Color::Black => y + 1,
+            };
             Some(Self::Normal {
                 from: position_to_index(x+1, y),
-                to: position_to_index(x, y-1),
-            })
-        }
-    }
-
-    pub fn black_en_passant_left(en_passant_index: u8) -> Option<Self> {
-        let (x, y) = index_to_position(en_passant_index);
-        if x == 0 {
-            None
-        } else {
-            Some(Self::Normal {
-                from: position_to_index(x-1, y),
-                to: position_to_index(x, y+1),
-            })
-        }
-    }
-
-    pub fn black_en_passant_right(en_passant_index: u8) -> Option<Self> {
-        let (x, y) = index_to_position(en_passant_index);
-        if x == 7 {
-            None
-        } else {
-            Some(Self::Normal {
-                from: position_to_index(x+1, y),
-                to: position_to_index(x, y+1),
+                to: position_to_index(x, next_y),
             })
         }
     }
