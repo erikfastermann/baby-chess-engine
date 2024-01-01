@@ -1,6 +1,15 @@
 use std::iter::zip;
 
-use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::PlayerBoard};
+use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::{PlayerBoard, Board}, mov::Move};
+
+pub type SimpleMoves = [(u8, u8)];
+pub const SIMPLE_MOVES_BUFFER_LEN: usize = 218; // https://www.chessprogramming.org/Chess_Position
+pub type SimpleMovesBuffer = [(u8, u8); SIMPLE_MOVES_BUFFER_LEN];
+
+// Castle: 2, En Passant: 2, Pawn Double Step: 8, Promotion: 8*4
+// (Double Step and Promotion cannot occur at the same time)
+pub const SPECIAL_MOVES_BUFFER_LEN: usize = 2 + 2 + 8*4;
+pub type SpecialMovesBuffer = [Move; SPECIAL_MOVES_BUFFER_LEN];
 
 static mut DIAGONALS_LEFT: [Bitset; 64] = [bitset::ZERO; 64];
 static mut DIAGONALS_RIGHT: [Bitset; 64] = [bitset::ZERO; 64];
@@ -350,18 +359,18 @@ impl Moves {
     pub fn without_pawns_castle(we: &PlayerBoard, enemy: &PlayerBoard) -> Self {
         let enemy_pieces = enemy.bitset();
         let all_pieces = we.bitset() | enemy_pieces;
-        we.queens.indices().map(|index| Moves::queen(all_pieces, index, enemy_pieces))
-            .chain(we.rooks.indices().map(|index| Moves::rook(all_pieces, index, enemy_pieces)))
-            .chain(we.bishops.indices().map(|index| Moves::bishop(all_pieces, index, enemy_pieces)))
-            .chain(we.knights.indices().map(|index| Moves::knight(all_pieces, index, enemy_pieces)))
-            .chain(we.king.indices().map(|index| Moves::king(all_pieces, index, enemy_pieces)))
+        we.queens().indices().map(|index| Moves::queen(all_pieces, index, enemy_pieces))
+            .chain(we.rooks().indices().map(|index| Moves::rook(all_pieces, index, enemy_pieces)))
+            .chain(we.bishops().indices().map(|index| Moves::bishop(all_pieces, index, enemy_pieces)))
+            .chain(we.knights().indices().map(|index| Moves::knight(all_pieces, index, enemy_pieces)))
+            .chain(we.king().indices().map(|index| Moves::king(all_pieces, index, enemy_pieces)))
             .fold(Moves::empty(), |a, b| a.combine(&b))
     }
 
     pub fn white_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Self {
         let enemy_pieces = enemy.bitset();
         let all_pieces = we.bitset() | enemy_pieces;
-        we.pawns.indices()
+        we.pawns().indices()
             .map(|index| Moves::white_pawn_without_en_passant(all_pieces, index, enemy_pieces))
             .fold(Moves::empty(), |a, b| a.combine(&b))
     }
@@ -369,7 +378,7 @@ impl Moves {
     pub fn black_pawns_without_en_passant(we: &PlayerBoard, enemy: &PlayerBoard) -> Self {
         let enemy_pieces = enemy.bitset();
         let all_pieces = we.bitset() | enemy_pieces;
-        we.pawns.indices()
+        we.pawns().indices()
             .map(|index| Moves::black_pawn_without_en_passant(all_pieces, index, enemy_pieces))
             .fold(Moves::empty(), |a, b| a.combine(&b))
     }
@@ -387,6 +396,35 @@ impl Moves {
             captures: self.captures & bitset,
         }
     }
+}
+
+pub struct FullMovesBuffer {
+    simple: SimpleMovesBuffer,
+    special: SpecialMovesBuffer,
+}
+
+impl FullMovesBuffer {
+    pub fn new() -> Self {
+        Self {
+            simple: [(0, 0); SIMPLE_MOVES_BUFFER_LEN],
+            special: [Move::Normal { from: 0, to: 0 }; SPECIAL_MOVES_BUFFER_LEN],
+        }
+    }
+
+    pub fn fill<'a>(&'a mut self, board: &mut Board) -> FullMoves<'a> {
+        let simple = board.we().fill_simple_moves(
+            board.enemy(),
+            board.color,
+            &mut self.simple,
+        );
+        let special = board.fill_special_moves(&mut self.special);
+        FullMoves { simple, special }
+    }
+}
+
+pub struct FullMoves<'a> {
+    pub simple: &'a mut [(u8, u8)],
+    pub special: &'a mut [Move],
 }
 
 #[cfg(test)]

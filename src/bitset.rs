@@ -30,6 +30,12 @@ impl ops::BitOr for Bitset {
     }
 }
 
+impl ops::BitOrAssign for Bitset {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 impl ops::Not for Bitset {
     type Output = Self;
 
@@ -135,11 +141,6 @@ impl Bitset {
         (self & other) != Bitset::zero()
     }
 
-    pub fn checked_clear(&mut self, index: u8) {
-        assert!(self.has(index));
-        self.clear(index);
-    }
-
     pub fn clear(&mut self, index: u8) {
         *self = self.without(index);
     }
@@ -147,11 +148,6 @@ impl Bitset {
     pub fn without(self, index: u8) -> Self {
         debug_assert!(index < 64);
         Self(self.0 & !(1 << index))
-    }
-
-    pub fn checked_set(&mut self, index: u8) {
-        assert!(!self.has(index));
-        self.set(index);
     }
 
     pub fn set(&mut self, index: u8) {

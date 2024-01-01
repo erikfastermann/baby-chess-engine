@@ -13,9 +13,7 @@ mod piece;
 mod position;
 mod result;
 mod search;
-mod side;
 mod uci;
-mod visit;
 
 fn main() -> Result<()> {
     unsafe { init::init() };

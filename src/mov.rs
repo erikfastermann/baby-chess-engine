@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{piece::Piece, position::{index_to_position, position_to_index}, result::Result};
+use crate::{piece::Piece, position::{index_to_position, position_to_index}, result::Result, color::Color};
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -22,50 +22,49 @@ impl fmt::Debug for Move {
 }
 
 impl Move {
-    pub fn white_en_passant_left(en_passant_index: u8) -> Option<Self> {
+    pub fn castle_left(color: Color) -> Self {
+        Move::Normal {
+            from: color.king_starting_index(),
+            to: color.king_starting_index() - 2,
+        }
+    }
+
+    pub fn castle_right(color: Color) -> Self {
+        Move::Normal {
+            from: color.king_starting_index(),
+            to: color.king_starting_index() + 2,
+        }
+    }
+
+    pub fn en_passant_left(color: Color, en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
+        debug_assert!(y == 3 || y == 4);
         if x == 0 {
             None
         } else {
+            let next_y = match color {
+                Color::White => y - 1,
+                Color::Black => y + 1,
+            };
             Some(Self::Normal {
                 from: position_to_index(x-1, y),
-                to: position_to_index(x, y-1),
+                to: position_to_index(x, next_y),
             })
         }
     }
 
-    pub fn white_en_passant_right(en_passant_index: u8) -> Option<Self> {
+    pub fn en_passant_right(color: Color, en_passant_index: u8) -> Option<Self> {
         let (x, y) = index_to_position(en_passant_index);
         if x == 7 {
             None
         } else {
+            let next_y = match color {
+                Color::White => y - 1,
+                Color::Black => y + 1,
+            };
             Some(Self::Normal {
                 from: position_to_index(x+1, y),
-                to: position_to_index(x, y-1),
-            })
-        }
-    }
-
-    pub fn black_en_passant_left(en_passant_index: u8) -> Option<Self> {
-        let (x, y) = index_to_position(en_passant_index);
-        if x == 0 {
-            None
-        } else {
-            Some(Self::Normal {
-                from: position_to_index(x-1, y),
-                to: position_to_index(x, y+1),
-            })
-        }
-    }
-
-    pub fn black_en_passant_right(en_passant_index: u8) -> Option<Self> {
-        let (x, y) = index_to_position(en_passant_index);
-        if x == 7 {
-            None
-        } else {
-            Some(Self::Normal {
-                from: position_to_index(x+1, y),
-                to: position_to_index(x, y+1),
+                to: position_to_index(x, next_y),
             })
         }
     }
@@ -101,17 +100,6 @@ impl Move {
         }
     }
 
-    fn index_to_chess_position(index: u8) -> (char, char) {
-        let (x, y) = index_to_position(index);
-        ((b'a' + x).into(), char::from_digit((8-y).into(), 10).unwrap())
-    }
-
-    #[allow(dead_code)]
-    fn fmt_index(index: u8) -> String {
-        let (x, y) = Self::index_to_chess_position(index);
-        format!("{x}{y}")
-    }
-
     fn chess_position_to_index(raw_position: &[u8]) -> Result<u8> {
         assert_eq!(raw_position.len(), 2);
         let (raw_x, raw_y) = (raw_position[0], raw_position[1]);
@@ -126,8 +114,8 @@ impl Move {
     }
 
     fn long_algebraic_notation_normal(from_index: u8, to_index: u8) -> String {
-        let (from_x, from_y) = Self::index_to_chess_position(from_index);
-        let (to_x, to_y) = Self::index_to_chess_position(to_index);
+        let (from_x, from_y) = crate::fmt::index_to_chess_position(from_index);
+        let (to_x, to_y) = crate::fmt::index_to_chess_position(to_index);
         format!("{from_x}{from_y}{to_x}{to_y}")
     }
 }
