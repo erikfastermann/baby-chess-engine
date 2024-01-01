@@ -1,6 +1,6 @@
 use std::iter::zip;
 
-use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::{PlayerBoard, Board}, mov::Move, color::Color};
+use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::{PlayerBoard, Board}, mov::Move};
 
 pub type SimpleMoves = [(u8, u8)];
 pub const SIMPLE_MOVES_BUFFER_LEN: usize = 218; // https://www.chessprogramming.org/Chess_Position
@@ -411,13 +411,13 @@ impl FullMovesBuffer {
         }
     }
 
-    pub fn fill<'a>(&'a mut self, board: &mut Board, color: Color) -> FullMoves<'a> {
-        let simple = board.player_board(color).fill_simple_moves(
-            board.player_board(color.other()),
-            color,
+    pub fn fill<'a>(&'a mut self, board: &mut Board) -> FullMoves<'a> {
+        let simple = board.we().fill_simple_moves(
+            board.enemy(),
+            board.color,
             &mut self.simple,
         );
-        let special = board.fill_special_moves(color, &mut self.special);
+        let special = board.fill_special_moves(&mut self.special);
         FullMoves { simple, special }
     }
 }

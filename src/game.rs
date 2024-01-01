@@ -8,7 +8,6 @@ const SCORE_MAX: i32 = i32::MAX;
 #[derive(Clone)]
 pub struct Game {
     board: Board,
-    next_move_color: Color,
     full_position_counts: HashMap<Board, usize>,
 }
 
@@ -19,7 +18,6 @@ impl Game {
     pub fn new() -> Self {
         let mut game = Self {
             board: Board::start(),
-            next_move_color: Color::White,
             full_position_counts: HashMap::new(),
         };
         game.full_position_counts.insert(game.board.clone(), 1);
@@ -31,7 +29,7 @@ impl Game {
         let mut legal_moves = Vec::new();
 
         let mut moves_buffer = FullMovesBuffer::new();
-        let moves = moves_buffer.fill(&mut next_game.board, self.next_move_color);
+        let moves = moves_buffer.fill(&mut next_game.board);
 
         let special = moves.special.iter()
             .filter(|mov| !next_game.unchecked_move_has_check_or_repetition(self, **mov));
@@ -47,7 +45,7 @@ impl Game {
 
     fn unchecked_move_has_check_or_repetition(&mut self, old: &Self, mov: Move) -> bool {
         self.apply_move_unchecked(mov);
-        let has_check_or_repetition = self.has_check(self.next_move_color)
+        let has_check_or_repetition = self.has_check(self.board.color)
             || self.full_position_counts.get(&self.board).is_some_and(|count| *count >= 3);
         self.reset_with(old);
         has_check_or_repetition
@@ -55,14 +53,12 @@ impl Game {
 
     pub fn reset(&mut self) {
         self.board = Board::start();
-        self.next_move_color = Color::White;
         self.full_position_counts.clear();
     }
 
     fn reset_with(&mut self, other: &Self) {
         // TODO: reset single move
         self.board = other.board.clone();
-        self.next_move_color = other.next_move_color;
         // TODO: don't copy the hashmap every time
         self.full_position_counts.clear();
         self.full_position_counts.extend(
@@ -87,8 +83,7 @@ impl Game {
     }
 
     fn apply_move_unchecked(&mut self, mov: Move) {
-        self.board.apply_move_unchecked(self.next_move_color, mov);
-        self.next_move_color = self.next_move_color.other();
+        self.board.apply_move_unchecked(mov);
 
         let count = self.full_position_counts
             .entry(self.board.clone())
@@ -106,7 +101,6 @@ impl Game {
             next_game.apply_move_unchecked(mov);
             let score = -search::search(
                 &mut next_game.board,
-                self.next_move_color.other(),
                 config::DEFAULT_DEPTH,
                 SCORE_MIN,
                 SCORE_MAX,
@@ -122,7 +116,7 @@ impl Game {
         match best_move {
             Some(mov) => Ok(mov),
             None => {
-                if self.has_check(self.next_move_color.other()) {
+                if self.has_check(self.board.color.other()) {
                     Err(EndOfGameError::Checkmate.into())
                 } else {
                     Err(EndOfGameError::Other.into())
@@ -166,7 +160,7 @@ mod test {
         );
         assert_eq!(white_moves.len(), 20);
 
-        game.next_move_color = game.next_move_color.other();
+        game.board.color = game.board.color.other();
         let black_moves: Vec<_> = game.legal_moves();
         assert_eq!(
             black_moves.iter().copied().collect::<HashSet<_>>().len(),

@@ -100,17 +100,6 @@ impl Move {
         }
     }
 
-    fn index_to_chess_position(index: u8) -> (char, char) {
-        let (x, y) = index_to_position(index);
-        ((b'a' + x).into(), char::from_digit((8-y).into(), 10).unwrap())
-    }
-
-    #[allow(dead_code)]
-    fn fmt_index(index: u8) -> String {
-        let (x, y) = Self::index_to_chess_position(index);
-        format!("{x}{y}")
-    }
-
     fn chess_position_to_index(raw_position: &[u8]) -> Result<u8> {
         assert_eq!(raw_position.len(), 2);
         let (raw_x, raw_y) = (raw_position[0], raw_position[1]);
@@ -125,8 +114,8 @@ impl Move {
     }
 
     fn long_algebraic_notation_normal(from_index: u8, to_index: u8) -> String {
-        let (from_x, from_y) = Self::index_to_chess_position(from_index);
-        let (to_x, to_y) = Self::index_to_chess_position(to_index);
+        let (from_x, from_y) = crate::fmt::index_to_chess_position(from_index);
+        let (to_x, to_y) = crate::fmt::index_to_chess_position(to_index);
         format!("{from_x}{from_y}{to_x}{to_y}")
     }
 }

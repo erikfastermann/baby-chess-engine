@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::bitset::Bitset;
+use crate::{bitset::Bitset, position::index_to_position};
 
 pub fn fmt_pieces(board: &mut [u8; 64], pieces: Bitset, ch: char) {
     for index in pieces.indices() {
@@ -15,4 +15,14 @@ pub fn fmt_board(board: &[u8; 64], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}\n", &board_str[i-8..i])?;
     }
     Ok(())
+}
+
+pub fn fmt_index(index: u8) -> String {
+    let (x, y) = index_to_chess_position(index);
+    format!("{x}{y}")
+}
+
+pub fn index_to_chess_position(index: u8) -> (char, char) {
+    let (x, y) = index_to_position(index);
+    ((b'a' + x).into(), char::from_digit((8-y).into(), 10).unwrap())
 }
