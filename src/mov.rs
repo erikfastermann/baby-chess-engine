@@ -119,3 +119,46 @@ impl Move {
         format!("{from_x}{from_y}{to_x}{to_y}")
     }
 }
+
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchMove {
+    Simple { from: u8, to: u8 },
+    Special(Move),
+}
+
+impl SearchMove {
+    pub fn to_move(self) -> Move {
+        match self {
+            SearchMove::Simple { from, to } => Move::Normal { from, to },
+            SearchMove::Special(mov) => mov,
+        }
+    }
+
+    pub fn is_promotion(self) -> bool {
+        let SearchMove::Special(mov) = self else {
+            return false;
+        };
+        matches!(mov, Move::Promotion { .. })
+    }
+
+    pub fn from(self) -> u8 {
+        match self {
+            SearchMove::Simple { from, .. } => from,
+            SearchMove::Special(mov) => match mov {
+                Move::Normal { from, .. } => from,
+                Move::Promotion { from, .. } => from,
+            },
+        }
+    }
+
+    pub fn to(self) -> u8 {
+        match self {
+            SearchMove::Simple { to, .. } => to,
+            SearchMove::Special(mov) => match mov {
+                Move::Normal { to, .. } => to,
+                Move::Promotion { to, .. } => to,
+            },
+        }
+    }
+}

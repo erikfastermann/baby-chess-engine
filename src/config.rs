@@ -1,4 +1,4 @@
-pub const DEFAULT_DEPTH: usize = 5;
+pub const DEFAULT_DEPTH: usize = 6;
 
 // See https://www.chessprogramming.org/Simplified_Evaluation_Function
 

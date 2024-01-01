@@ -1,4 +1,4 @@
-use crate::result::Result;
+use crate::{result::Result, config};
 
 pub static PROMOTION_PIECES: [Piece; 4] = [
     Piece::Queen,
@@ -59,5 +59,17 @@ impl Piece {
 
     pub fn can_promote_to(&self) -> bool {
         PROMOTION_PIECES.contains(self)
+    }
+
+    pub fn value(&self) -> i32 {
+        match self {
+            Piece::None => 0,
+            Piece::King => config::SCORE_KING,
+            Piece::Queen => config::SCORE_QUEEN,
+            Piece::Rook => config::SCORE_ROOK,
+            Piece::Bishop => config::SCORE_BISHOP,
+            Piece::Knight => config::SCORE_KNIGHT,
+            Piece::Pawn => config::SCORE_PAWN,
+        }
     }
 }

@@ -1,15 +1,6 @@
-use std::iter::zip;
+use std::{iter::zip, cmp::Ordering};
 
-use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::{PlayerBoard, Board}, mov::Move};
-
-pub type SimpleMoves = [(u8, u8)];
-pub const SIMPLE_MOVES_BUFFER_LEN: usize = 218; // https://www.chessprogramming.org/Chess_Position
-pub type SimpleMovesBuffer = [(u8, u8); SIMPLE_MOVES_BUFFER_LEN];
-
-// Castle: 2, En Passant: 2, Pawn Double Step: 8, Promotion: 8*4
-// (Double Step and Promotion cannot occur at the same time)
-pub const SPECIAL_MOVES_BUFFER_LEN: usize = 2 + 2 + 8*4;
-pub type SpecialMovesBuffer = [Move; SPECIAL_MOVES_BUFFER_LEN];
+use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::{PlayerBoard, Board}, mov::{Move, SearchMove}, piece::{PROMOTION_PIECES, Piece}};
 
 static mut DIAGONALS_LEFT: [Bitset; 64] = [bitset::ZERO; 64];
 static mut DIAGONALS_RIGHT: [Bitset; 64] = [bitset::ZERO; 64];
@@ -398,33 +389,90 @@ impl Moves {
     }
 }
 
-pub struct FullMovesBuffer {
-    simple: SimpleMovesBuffer,
-    special: SpecialMovesBuffer,
+const MAX_MOVES: usize = 218; // https://www.chessprogramming.org/Chess_Position
+
+pub struct SearchMovesBuilder {
+    buffer: [SearchMove; MAX_MOVES],
+    index: usize,
 }
 
-impl FullMovesBuffer {
+impl SearchMovesBuilder {
     pub fn new() -> Self {
         Self {
-            simple: [(0, 0); SIMPLE_MOVES_BUFFER_LEN],
-            special: [Move::Normal { from: 0, to: 0 }; SPECIAL_MOVES_BUFFER_LEN],
+            buffer: [SearchMove::Simple { from: 0, to: 0 }; MAX_MOVES],
+            index: 0,
         }
     }
 
-    pub fn fill<'a>(&'a mut self, board: &mut Board) -> FullMoves<'a> {
-        let simple = board.we().fill_simple_moves(
-            board.enemy(),
-            board.color,
-            &mut self.simple,
-        );
-        let special = board.fill_special_moves(&mut self.special);
-        FullMoves { simple, special }
+    pub fn push_simple_moves(&mut self, from: u8, moves: Moves) {
+        for to in moves.moves.indices() {
+            self.buffer[self.index] = SearchMove::Simple { from, to };
+            self.index += 1;
+        }
+        for to in moves.captures.indices() {
+            self.buffer[self.index] = SearchMove::Simple { from, to };
+            self.index += 1;
+        }
+    }
+
+    pub fn push_special_move(&mut self, mov: Move) {
+        self.buffer[self.index] = SearchMove::Special(mov);
+        self.index += 1;
+    }
+
+    pub fn push_special_normal_moves(&mut self, from: u8, moves: Moves) {
+        for to in moves.moves.indices() {
+            self.buffer[self.index] = SearchMove::Special(Move::Normal { from, to });
+            self.index += 1;
+        }
+        for to in moves.captures.indices() {
+            self.buffer[self.index] = SearchMove::Special(Move::Normal { from, to });
+            self.index += 1;
+        }
+    }
+
+    pub fn push_special_promotion_moves(&mut self, from: u8, moves: Moves) {
+        for to in moves.moves.indices() {
+            for piece in PROMOTION_PIECES {
+                self.buffer[self.index] = SearchMove::Special(Move::Promotion { piece, from, to });
+                self.index += 1;
+            }
+        }
+        for to in moves.captures.indices() {
+            for piece in PROMOTION_PIECES {
+                self.buffer[self.index] = SearchMove::Special(Move::Promotion { piece, from, to });
+                self.index += 1;
+            }
+        }
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [SearchMove] {
+        &mut self.buffer[..self.index]
+    }
+
+    pub fn fill<'a>(&'a mut self, board: &mut Board) -> &[SearchMove] {
+        board.we().fill_simple_moves(board.enemy(), board.color, self);
+        board.fill_special_moves(self);
+        self.as_slice_mut()
+    }
+
+    pub fn sort<'a>(&'a mut self, board: &Board) -> &'a [SearchMove] {
+        self.as_slice_mut().sort_by(|a, b| {
+            compare_search_move_score_guess(board, *a, *b).reverse()
+        });
+        self.as_slice_mut()
     }
 }
 
-pub struct FullMoves<'a> {
-    pub simple: &'a mut [(u8, u8)],
-    pub special: &'a mut [Move],
+fn compare_search_move_score_guess(board: &Board, a: SearchMove, b: SearchMove) -> Ordering {
+    // TODO: score
+    if a.is_promotion() || b.is_promotion() {
+        a.is_promotion().cmp(&b.is_promotion())
+    } else {
+        let a_capture = board.enemy().which_piece(a.to());
+        let b_capture = board.enemy().which_piece(b.to());
+        (a_capture != Piece::None).cmp(&(b_capture != Piece::None))
+    }
 }
 
 #[cfg(test)]

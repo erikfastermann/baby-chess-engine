@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, bitset::{Bitset, ROW_0, ROW_7}, position::{index_to_position, position_to_index}, color::Color, config, moves::{Moves, SimpleMovesBuffer, SimpleMoves, SpecialMovesBuffer}, mov::Move};
+use crate::{piece::{Piece, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, bitset::{Bitset, ROW_0, ROW_7}, position::{index_to_position, position_to_index}, color::Color, config, moves::{Moves, SearchMovesBuilder}, mov::Move};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Board {
@@ -310,40 +310,33 @@ impl Board {
         }
     }
 
-    pub fn fill_special_moves<'a>(
-        &mut self,
-        buffer: &'a mut SpecialMovesBuffer,
-    ) -> &'a mut [Move] {
+    pub fn fill_special_moves<'a>(&mut self, builder: &'a mut SearchMovesBuilder) {
         let all_pieces = self.bitset();
         let enemy_pieces = self.enemy().bitset();
-
-        let mut builder = SpecialMovesBuilder::new(buffer);
 
         for from in self.we().pawns().indices() {
             let pawn_promotion = match self.color {
                 Color::White => Moves::white_pawn_promotion(all_pieces, from, enemy_pieces),
                 Color::Black => Moves::black_pawn_promotion(all_pieces, from, enemy_pieces),
             };
-            builder.push_promotion_moves(from, pawn_promotion);
+            builder.push_special_promotion_moves(from, pawn_promotion);
             let pawn_double = match self.color {
                 Color::White => Moves::white_pawn_double(all_pieces, from, enemy_pieces),
                 Color::Black => Moves::black_pawn_double(all_pieces, from, enemy_pieces),
             };
-            builder.push_normal_moves(from, pawn_double);
+            builder.push_special_normal_moves(from, pawn_double);
         }
 
         if self.can_castle_left() {
-            builder.push_move(Move::castle_left(self.color));
+            builder.push_special_move(Move::castle_left(self.color));
         }
         if self.can_castle_right() {
-            builder.push_move(Move::castle_right(self.color));
+            builder.push_special_move(Move::castle_right(self.color));
         }
 
         if let Some(en_passant_index) = self.en_passant_index {
-            self.fill_en_passant(en_passant_index, &mut builder);
+            self.fill_en_passant(en_passant_index, builder);
         }
-
-        builder.to_slice()
     }
 
     fn can_castle_right(&mut self) -> bool {
@@ -404,67 +397,14 @@ impl Board {
         true
     }
 
-    fn fill_en_passant(
-        &self,
-        en_passant_index: u8,
-        builder: &mut SpecialMovesBuilder,
-    ) {
+    fn fill_en_passant(&self, en_passant_index: u8, builder: &mut SearchMovesBuilder) {
         if self.we().has_en_passant_left(self.enemy(), en_passant_index) {
-            builder.push_move(Move::en_passant_left(self.color, en_passant_index).unwrap());
+            builder.push_special_move(Move::en_passant_left(self.color, en_passant_index).unwrap());
         }
 
         if self.we().has_en_passant_right(self.enemy(), en_passant_index) {
-            builder.push_move(Move::en_passant_right(self.color, en_passant_index).unwrap());
+            builder.push_special_move(Move::en_passant_right(self.color, en_passant_index).unwrap());
         }
-    }
-}
-
-struct SpecialMovesBuilder<'a> {
-    buffer: &'a mut SpecialMovesBuffer,
-    index: usize,
-}
-
-impl <'a> SpecialMovesBuilder<'a> {
-    fn new(buffer: &'a mut SpecialMovesBuffer) -> Self {
-        Self {
-            buffer,
-            index: 0,
-        }
-    }
-
-    fn push_move(&mut self, mov: Move) {
-        self.buffer[self.index] = mov;
-        self.index += 1;
-    }
-
-    fn push_normal_moves(&mut self, from: u8, moves: Moves) {
-        for to in moves.moves.indices() {
-            self.buffer[self.index] = Move::Normal { from, to };
-            self.index += 1;
-        }
-        for to in moves.captures.indices() {
-            self.buffer[self.index] = Move::Normal { from, to };
-            self.index += 1;
-        }
-    }
-
-    fn push_promotion_moves(&mut self, from: u8, moves: Moves) {
-        for to in moves.moves.indices() {
-            for piece in PROMOTION_PIECES {
-                self.buffer[self.index] = Move::Promotion { piece, from, to };
-                self.index += 1;
-            }
-        }
-        for to in moves.captures.indices() {
-            for piece in PROMOTION_PIECES {
-                self.buffer[self.index] = Move::Promotion { piece, from, to };
-                self.index += 1;
-            }
-        }
-    }
-
-    fn to_slice(self) -> &'a mut [Move] {
-        &mut self.buffer[..self.index]
     }
 }
 
@@ -702,72 +642,39 @@ impl PlayerBoard {
         &self,
         enemy: &Self,
         we_color: Color,
-        buffer: &'a mut SimpleMovesBuffer,
-    ) -> &'a mut SimpleMoves {
+        builder: &'a mut SearchMovesBuilder,
+    ) {
         let enemy_pieces = enemy.bitset();
         let all_pieces = self.bitset() | enemy_pieces;
 
-        let mut builder = SimpleMovesBuilder::new(buffer);
-
         for from in self.pawns().indices() {
             match we_color {
-                Color::White => builder.push(
+                Color::White => builder.push_simple_moves(
                     from,
                     Moves::white_pawn_normal_single_without_en_passant(all_pieces, from, enemy_pieces),
                 ),
-                Color::Black => builder.push(
+                Color::Black => builder.push_simple_moves(
                     from,
                     Moves::black_pawn_normal_single_without_en_passant(all_pieces, from, enemy_pieces),
                 ),
             };
         }
         for from in self.knights().indices() {
-            builder.push(from, Moves::knight(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(from, Moves::knight(all_pieces, from, enemy_pieces));
         }
         for from in self.bishops().indices() {
-            builder.push(from, Moves::bishop(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(from, Moves::bishop(all_pieces, from, enemy_pieces));
         }
         for from in self.rooks().indices() {
-            builder.push(from, Moves::rook(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(from, Moves::rook(all_pieces, from, enemy_pieces));
         }
         for from in self.queens().indices() {
-            builder.push(from, Moves::queen(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(from, Moves::queen(all_pieces, from, enemy_pieces));
         }
-        builder.push(
+        builder.push_simple_moves(
             self.king().first_index(),
             Moves::king(all_pieces, self.king().first_index(), enemy_pieces),
         );
-    
-        builder.to_slice()
-    }
-}
-
-struct SimpleMovesBuilder<'a> {
-    buffer: &'a mut SimpleMovesBuffer,
-    index: usize,
-}
-
-impl <'a> SimpleMovesBuilder<'a> {
-    fn new(buffer: &'a mut SimpleMovesBuffer) -> Self {
-        Self {
-            buffer,
-            index: 0,
-        }
-    }
-
-    fn push(&mut self, from: u8, moves: Moves) {
-        for to in moves.moves.indices() {
-            self.buffer[self.index] = (from, to);
-            self.index += 1;
-        }
-        for to in moves.captures.indices() {
-            self.buffer[self.index] = (from, to);
-            self.index += 1;
-        }
-    }
-
-    fn to_slice(self) -> &'a mut SimpleMoves {
-        &mut self.buffer[..self.index]
     }
 }
 

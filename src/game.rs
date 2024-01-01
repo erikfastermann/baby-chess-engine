@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fmt, error};
 
-use crate::{board::Board, color::Color, mov::Move, search, config, result::Result, moves::FullMovesBuffer};
+use crate::{board::Board, color::Color, mov::Move, search, config, result::Result, moves::SearchMovesBuilder};
 
 const SCORE_MIN: i32 = i32::MAX * -1;
 const SCORE_MAX: i32 = i32::MAX;
@@ -26,21 +26,12 @@ impl Game {
 
     fn legal_moves(&self) -> Vec<Move> {
         let mut next_game = self.clone();
-        let mut legal_moves = Vec::new();
-
-        let mut moves_buffer = FullMovesBuffer::new();
-        let moves = moves_buffer.fill(&mut next_game.board);
-
-        let special = moves.special.iter()
-            .filter(|mov| !next_game.unchecked_move_has_check_or_repetition(self, **mov));
-        legal_moves.extend(special);
-
-        let simple = moves.simple.iter()
-            .map(|(from, to)| Move::Normal { from: *from, to: *to })
-            .filter(|mov| !next_game.unchecked_move_has_check_or_repetition(self, *mov));
-        legal_moves.extend(simple);
-
-        legal_moves
+        let mut builder = SearchMovesBuilder::new();
+        let moves = builder.fill(&mut next_game.board);
+        moves.iter()
+            .map(|mov| mov.to_move())
+            .filter(|mov| !next_game.unchecked_move_has_check_or_repetition(self, *mov))
+            .collect()
     }
 
     fn unchecked_move_has_check_or_repetition(&mut self, old: &Self, mov: Move) -> bool {
@@ -101,7 +92,7 @@ impl Game {
             next_game.apply_move_unchecked(mov);
             let score = -search::search(
                 &mut next_game.board,
-                config::DEFAULT_DEPTH,
+                config::DEFAULT_DEPTH - 1,
                 SCORE_MIN,
                 SCORE_MAX,
             );
