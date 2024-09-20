@@ -30,14 +30,21 @@ pub enum Piece {
 
 impl Piece {
     pub fn from_symbol(symbol: char) -> Result<Self> {
-        match symbol {
-            'p' => Ok(Piece::Pawn),
-            'b' => Ok(Piece::Bishop),
-            'n' => Ok(Piece::Knight),
-            'r' => Ok(Piece::Rook),
-            'q' => Ok(Piece::Queen),
-            'k' => Ok(Piece::King),
+        match Self::from_symbol_option(symbol) {
+            Some(piece) => Ok(piece),
             _ => Err(format!("unknown symbol '{}'", char::from(symbol)).into()),
+        }
+    }
+
+    pub fn from_symbol_option(symbol: char) -> Option<Self> {
+        match symbol {
+            'p' => Some(Piece::Pawn),
+            'b' => Some(Piece::Bishop),
+            'n' => Some(Piece::Knight),
+            'r' => Some(Piece::Rook),
+            'q' => Some(Piece::Queen),
+            'k' => Some(Piece::King),
+            _ => None,
         }
     }
 

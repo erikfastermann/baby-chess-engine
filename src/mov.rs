@@ -100,8 +100,13 @@ impl Move {
         }
     }
 
-    fn chess_position_to_index(raw_position: &[u8]) -> Result<u8> {
-        assert_eq!(raw_position.len(), 2);
+    pub fn chess_position_to_index(raw_position: &[u8]) -> Result<u8> {
+        if raw_position.len() != 2 {
+            return Err(format!(
+                "expected square, got '{}'",
+                String::from_utf8_lossy(raw_position),
+            ).into());
+        }
         let (raw_x, raw_y) = (raw_position[0], raw_position[1]);
         if !(b'a'..=b'h').contains(&raw_x) {
             return Err(format!("expected file, got '{}'", char::from(raw_x)).into());

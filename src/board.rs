@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{piece::{Piece, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, bitset::{Bitset, ROW_0, ROW_7}, position::{index_to_position, position_to_index}, color::Color, config, moves::{Moves, SearchMovesBuilder}, mov::Move};
+use crate::{piece::{Piece, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, bitset::{Bitset, ROW_0, ROW_7}, position::{index_to_position, position_to_index}, color::Color, config, moves::{Moves, SearchMovesBuilder}, mov::Move, result::Result};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Board {
@@ -30,6 +30,7 @@ impl fmt::Display for Board {
 
         crate::fmt::fmt_board(&board, f)?;
         write!(f, "Next Move: {}\n", self.color)?;
+        // TODO: Could display in more fen like notation as the skipped field.
         write!(f, "En Passant: {:?}\n", self.en_passant_index.map(|index| crate::fmt::fmt_index(index)))
     }
 }
@@ -80,6 +81,105 @@ impl Board {
         board
     }
 
+    pub fn from_fen(fen: &str) -> Result<Self> {
+        let fen = fen.trim();
+        let mut fen_iter = fen.split_ascii_whitespace();
+        let board_raw = fen_iter.next().ok_or(InvalidFenError)?;
+        let color_raw = fen_iter.next().ok_or(InvalidFenError)?;
+        let castle_raw = fen_iter.next().ok_or(InvalidFenError)?;
+        let en_passant_raw = fen_iter.next().ok_or(InvalidFenError)?;
+        fen_iter.next().ok_or(InvalidFenError)?; // TODO: Handle 50 move repetition.
+        fen_iter.next().ok_or(InvalidFenError)?;
+        if fen_iter.next().is_some() {
+            return Err(InvalidFenError.into());
+        }
+
+        let color = match color_raw {
+            "w" => Color::White,
+            "b" => Color::Black,
+            _ => return Err(InvalidFenError.into()),
+        };
+        if castle_raw != "-"
+            && castle_raw.contains(|ch| !['k', 'q', 'K', 'Q'].contains(&ch)) {
+                return Err(InvalidFenError.into());
+        }
+        let en_passant_index = if en_passant_raw != "-" {
+            let en_passant_skipped_index = Move::chess_position_to_index(
+                en_passant_raw.as_bytes(),
+            )?;
+            let (x, y) = index_to_position(en_passant_skipped_index);
+            let en_passant_index = match y {
+                2 => position_to_index(x, 3),
+                5 => position_to_index(x, 4),
+                _ => return Err(InvalidFenError.into()),
+            };
+            // Checking the pawn exists is done later.
+            Some(en_passant_index)
+        } else {
+            None
+        };
+
+        let mut board = Self {
+            black: PlayerBoard {
+                bitsets: [Bitset::zero(); 7],
+                piece_board: [Piece::None; 64],
+                can_castle: CanCastle {
+                    left: castle_raw.contains('q'),
+                    right: castle_raw.contains('k'),
+                },
+            },
+            white: PlayerBoard {
+                bitsets: [Bitset::zero(); 7],
+                piece_board: [Piece::None; 64],
+                can_castle: CanCastle {
+                    left: castle_raw.contains('Q'),
+                    right: castle_raw.contains('K'),
+                },
+            },
+            color,
+            en_passant_index,
+        };
+
+        if board_raw.split('/').count() != 8 {
+            return Err(InvalidFenError.into());
+        }
+        for (rank_index, rank) in board_raw.split('/').enumerate() {
+            let mut file_index = 0;
+            for piece_or_spaces in rank.chars() {
+                if file_index > 7 {
+                    return Err(InvalidFenError.into());
+                }
+                match Piece::from_symbol_option(piece_or_spaces.to_ascii_lowercase()) {
+                    Some(piece) => {
+                        let is_white = piece_or_spaces.is_uppercase();
+                        let index = rank_index*8 + file_index;
+                        if is_white {
+                            board.white.piece_board[index] = piece;
+                        } else {
+                            board.black.piece_board[index] = piece;
+                        }
+                        file_index += 1;
+                    },
+                    None => {
+                        let spaces = piece_or_spaces.to_digit(10).ok_or(InvalidFenError)?;
+                        if spaces == 0 {
+                            return Err(InvalidFenError.into());
+                        }
+                        file_index += usize::try_from(spaces).unwrap();
+                    },
+                }
+            }
+            if file_index != 8 {
+                return Err(InvalidFenError.into());
+            }
+        }
+        board.white.fill_bitsets();
+        board.black.fill_bitsets();
+
+        board.check()?;
+        Ok(board)
+    }
+
     pub fn player_board(&self, color: Color) -> &PlayerBoard {
         match color {
             Color::White => &self.white,
@@ -115,13 +215,42 @@ impl Board {
     }
 
     pub fn debug_check(&self) {
-        self.white.debug_check();
-        self.black.debug_check();
-        debug_assert_eq!(
+        if cfg!(debug_assertions) {
+            if let Err(err) = self.check_fast() {
+                panic!("{err}");
+            }
+        }
+    }
+
+    fn check(&self) -> Result<()> {
+        self.check_fast()?;
+        if let Some(en_passant_index) = self.en_passant_index {
+            if !self.player_board(self.color.other()).pawns().has(en_passant_index) {
+                return Err("en passant position does not match with a pawn".into());
+            }
+            if self.color.other().en_passant_row() != index_to_position(en_passant_index).1 {
+                return Err("en passant on invalid rank".into());
+            }
+        }
+        let has_check = self.player_board(self.color).has_check(
+            self.player_board(self.color.other()),
+            self.color,
+        );
+        if has_check {
+            return Err("other color is currently in check".into());
+        }
+        Ok(())
+    }
+
+    fn check_fast(&self) -> Result<()> {
+        self.white.check()?;
+        self.black.check()?;
+        assert_eq!(
             self.white.bitset().count() + self.black.bitset().count(),
             self.bitset().count(),
         );
-        debug_assert!(self.bitset().count() <= 32);
+        assert!(self.bitset().count() <= 32);
+        Ok(())
     }
 
     fn is_end_game(&self) -> bool {
@@ -459,49 +588,41 @@ impl PlayerBoard {
         self.piece_board[index as usize] = piece;
     }
 
-    fn debug_check(&self) {
-        debug_assert_eq!(self.bitsets[Piece::None.to_usize()].count(), 0);
-
+    fn check(&self) -> Result<()> {
+        assert_eq!(self.bitsets[Piece::None.to_usize()].count(), 0);
         let count = self.pawns().count()
             + self.bishops().count()
             + self.knights().count()
             + self.rooks().count()
             + self.queens().count()
             + self.king().count();
-        debug_assert_eq!(count, self.bitset().count());
+        assert_eq!(count, self.bitset().count());
 
-        debug_assert_eq!((self.pawns() & ROW_0).count(), 0);
-        debug_assert_eq!((self.pawns() & ROW_7).count(), 0);
-
-        debug_assert_eq!(self.king().count(), 1);
-        debug_assert!(self.pawns().count() <= 8);
-        debug_assert!(self.bitset().count() <= 16);
-
-        self.debug_check_piece_board();
-    }
-
-    fn debug_check_piece_board(&self) {
-        if cfg!(debug_assertions) {
-            let bitset_piece = [
-                (self.pawns(), Piece::Pawn),
-                (self.knights(), Piece::Knight),
-                (self.bishops(), Piece::Bishop),
-                (self.rooks(), Piece::Rook),
-                (self.queens(), Piece::Queen),
-                (self.king(), Piece::King),
-            ];
-            for (bitset, piece) in bitset_piece {
-                let bitset_matches_piece_board = bitset
-                    .indices()
-                    .all(|index| self.which_piece(index) == piece);
-                debug_assert!(bitset_matches_piece_board);
-                let piece_board_matches_bitset = self.piece_board.iter()
-                    .enumerate()
-                    .filter(|(_, current_piece)| **current_piece == piece)
-                    .all(|(index, _)| bitset.has(index.try_into().unwrap()));
-                debug_assert!(piece_board_matches_bitset);
-            }
+        if (self.pawns() & ROW_0).count() != 0 || (self.pawns() & ROW_7).count() != 0 {
+            return Err("pawns on the 1st or 8th rank".into());
         }
+        if self.king().count() != 1 {
+            return Err("missing or multiple kings for one side".into());
+        };
+        let pawn_count = self.pawns().count();
+        if pawn_count > 8 {
+            return Err("more than 8 pawns for one side".into());
+        };
+        if self.bitset().count() > 16 {
+            return Err("more than 16 pieces for one side".into());
+        };
+
+        let max_bishops_knights_rooks: i32 = 10 - pawn_count;
+        if self.bishops().count() > max_bishops_knights_rooks
+            || self.knights().count() > max_bishops_knights_rooks
+            || self.rooks().count() > max_bishops_knights_rooks {
+                return Err("too many bishops, knights or rooks for one side".into());
+        }
+        if self.queens().count() > 9-pawn_count {
+            return Err("too many queens for one side".into());
+        }
+
+        Ok(())
     }
 
     pub fn bitset(&self) -> Bitset {
@@ -678,6 +799,17 @@ impl PlayerBoard {
     }
 }
 
+#[derive(Debug)]
+pub struct InvalidFenError;
+
+impl fmt::Display for InvalidFenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl std::error::Error for InvalidFenError {}
+
 struct PieceSquareTable {
     mid_game: [i32; 64],
     end_game: [i32; 64],
@@ -794,5 +926,18 @@ mod tests {
         board.white.remove_piece(white_queen);
         assert!(!board.white.has_check(&board.black, Color::White));
         assert!(board.black.has_check(&board.white, Color::Black));
+    }
+
+    #[test]
+    fn test_fen_en_passant() {
+        unsafe { init() };
+
+        let board = Board::from_fen(
+            "r1bqkbnr/ppp1pppp/2n5/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3"
+        ).unwrap();
+        assert_eq!(
+            board.en_passant_index.unwrap(),
+            Move::chess_position_to_index(b"d5").unwrap(),
+        )
     }
 }

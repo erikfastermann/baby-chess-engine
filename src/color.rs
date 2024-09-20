@@ -49,4 +49,11 @@ impl Color {
             Color::Black => position::BLACK_ROOK_RIGHT_STARTING_INDEX,
         }
     }
+
+    pub fn en_passant_row(&self) -> u8 {
+        match self {
+            Color::White => 4,
+            Color::Black => 3,
+        }
+    }
 }

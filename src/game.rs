@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, error};
+use std::{collections::HashMap, error, fmt};
 
 use crate::{board::Board, color::Color, mov::Move, search, config, result::Result, moves::SearchMovesBuilder};
 
@@ -22,6 +22,16 @@ impl Game {
         };
         game.full_position_counts.insert(game.board.clone(), 1);
         game
+    }
+
+    pub fn from_fen(fen: &str) -> Result<Self> {
+        let mut game = Self {
+            board: Board::from_fen(fen)?,
+            full_position_counts: HashMap::new(),
+        };
+        // We don't know the previous positions, so we just insert the current one.
+        game.full_position_counts.insert(game.board.clone(), 1);
+        Ok(game)
     }
 
     fn legal_moves(&self) -> Vec<Move> {
@@ -80,7 +90,7 @@ impl Game {
             .entry(self.board.clone())
             .or_insert(0);
         *count += 1;
-        assert!(*count < 3);
+        // TODO: Check no move repetition.
     }
 
     pub fn best_move(&self) -> Result<Move> {
@@ -220,5 +230,15 @@ mod test {
             game.apply_move(mov).unwrap();
         }
         game.board.debug_check();
+    }
+
+    #[test]
+    fn test_mate() {
+        unsafe { init() };
+
+        const HARD_MATE_FEN: &str = "8/1N2N3/2r5/3qp2R/QP2kp1K/5R2/6B1/6B1 w - - 0 0";
+        let game = Game::from_fen(HARD_MATE_FEN).unwrap();
+        let mov = game.best_move().unwrap();
+        assert_eq!(mov, Move::from_long_algebraic_notation("a4a8").unwrap())
     }
 }
