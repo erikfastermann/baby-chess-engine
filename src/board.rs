@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{piece::{Piece, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, bitset::{Bitset, ROW_0, ROW_7}, position::{index_to_position, position_to_index}, color::Color, config, moves::{Moves, SearchMovesBuilder}, mov::Move, result::Result};
+use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, config, mov::{Move, SearchMove, SearchMoveKind}, moves::{Moves, SearchMovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{index_to_position, position_to_index}, result::Result};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Board {
@@ -41,9 +41,6 @@ impl fmt::Debug for Board {
     }
 }
 
-// TODO:
-// Currently we still calculate castling moves
-// even if they are not strictly allowed.
 impl Board {
     pub fn start() -> Self {
         let mut board = Self {
@@ -53,11 +50,6 @@ impl Board {
                     left: true,
                     right: true,
                 },
-                piece_board: [
-                    STARTING_EMPTY_SQUARES.as_slice(),
-                    STARTING_PAWNS.as_slice(),
-                    STARTING_PIECES_FIRST_RANK.as_slice(),
-                ].concat().try_into().unwrap(),
             },
             black: PlayerBoard {
                 bitsets: [Bitset::zero(); 7],
@@ -65,17 +57,22 @@ impl Board {
                     left: true,
                     right: true,
                 },
-                piece_board: [
-                    STARTING_PIECES_FIRST_RANK.as_slice(),
-                    STARTING_PAWNS.as_slice(),
-                    STARTING_EMPTY_SQUARES.as_slice(),
-                ].concat().try_into().unwrap(),
             },
             color: Color::White,
             en_passant_index: None,
         };
-        board.white.fill_bitsets();
-        board.black.fill_bitsets();
+        board.white.fill_bitsets(&[
+                STARTING_EMPTY_SQUARES.as_slice(),
+                STARTING_PAWNS.as_slice(),
+                STARTING_PIECES_FIRST_RANK.as_slice(),
+            ].concat().try_into().unwrap(),
+        );
+        board.black.fill_bitsets(&[
+                STARTING_PIECES_FIRST_RANK.as_slice(),
+                STARTING_PAWNS.as_slice(),
+                STARTING_EMPTY_SQUARES.as_slice(),
+            ].concat().try_into().unwrap(),
+        );
 
         board.debug_check();
         board
@@ -119,30 +116,11 @@ impl Board {
             None
         };
 
-        let mut board = Self {
-            black: PlayerBoard {
-                bitsets: [Bitset::zero(); 7],
-                piece_board: [Piece::None; 64],
-                can_castle: CanCastle {
-                    left: castle_raw.contains('q'),
-                    right: castle_raw.contains('k'),
-                },
-            },
-            white: PlayerBoard {
-                bitsets: [Bitset::zero(); 7],
-                piece_board: [Piece::None; 64],
-                can_castle: CanCastle {
-                    left: castle_raw.contains('Q'),
-                    right: castle_raw.contains('K'),
-                },
-            },
-            color,
-            en_passant_index,
-        };
-
         if board_raw.split('/').count() != 8 {
             return Err(InvalidFenError.into());
         }
+        let mut white_pieces = [Piece::None; 64];
+        let mut black_pieces = [Piece::None; 64];
         for (rank_index, rank) in board_raw.split('/').enumerate() {
             let mut file_index = 0;
             for piece_or_spaces in rank.chars() {
@@ -154,9 +132,9 @@ impl Board {
                         let is_white = piece_or_spaces.is_uppercase();
                         let index = rank_index*8 + file_index;
                         if is_white {
-                            board.white.piece_board[index] = piece;
+                            white_pieces[index] = piece;
                         } else {
-                            board.black.piece_board[index] = piece;
+                            black_pieces[index] = piece;
                         }
                         file_index += 1;
                     },
@@ -173,9 +151,27 @@ impl Board {
                 return Err(InvalidFenError.into());
             }
         }
-        board.white.fill_bitsets();
-        board.black.fill_bitsets();
 
+        let mut board = Self {
+            black: PlayerBoard {
+                bitsets: [Bitset::zero(); 7],
+                can_castle: CanCastle {
+                    left: castle_raw.contains('q'),
+                    right: castle_raw.contains('k'),
+                },
+            },
+            white: PlayerBoard {
+                bitsets: [Bitset::zero(); 7],
+                can_castle: CanCastle {
+                    left: castle_raw.contains('Q'),
+                    right: castle_raw.contains('K'),
+                },
+            },
+            color,
+            en_passant_index,
+        };
+        board.white.fill_bitsets(&white_pieces);
+        board.black.fill_bitsets(&black_pieces);
         board.check()?;
         Ok(board)
     }
@@ -292,151 +288,166 @@ impl Board {
         self.en_passant_index = old.en_passant_index;
     }
 
-    pub fn apply_simple(&mut self, from: u8, to: u8) -> Piece {
-        debug_assert_eq!(self.en_passant_index, None);
-        self.we_mut().move_piece(from, to);
-        let captured_piece = self.enemy().which_piece(to);
-        self.enemy_mut().set_piece_none(to);
+    pub fn apply_search_move_unchecked(&mut self, mov: SearchMove) -> UndoSearchMove {
+        let undo = self.apply_search_move_unchecked_inner(mov);
         self.color = self.color.other();
-        captured_piece
-    }
-
-    pub fn un_apply_simple(&mut self, from: u8, to: u8, captured_piece: Piece) {
-        debug_assert_eq!(self.en_passant_index, None);
-        self.color = self.color.other();
-        if captured_piece != Piece::None {
-            self.enemy_mut().place_piece(to, captured_piece);
+        if matches!(mov.kind(), SearchMoveKind::PawnDouble) {
+            self.en_passant_index = Some(mov.to());
+        } else {
+            self.en_passant_index = None;
         }
-        self.we_mut().move_piece(to, from);
+        undo
     }
 
-    pub fn apply_move_unchecked(&mut self, mov: Move) {
-        self.en_passant_index = match mov {
-            Move::Normal { from, to } => self.apply_move_normal(from, to),
-            Move::Promotion { piece, from, to } => {
-                self.apply_move_promotion(piece, from, to);
-                None
+    fn apply_search_move_unchecked_inner(&mut self, mov: SearchMove) -> UndoSearchMove {
+        match mov.kind() {
+            SearchMoveKind::NonCapture => {
+                self.we_mut()
+                    .piece_mut(mov.piece())
+                    .mov(mov.from(), mov.to());
+                UndoSearchMove::NonCapture {
+                    piece: mov.piece(),
+                    from: mov.from(),
+                    to: mov.to(),
+                    we_can_castle: self.move_disable_castle(mov.piece(), mov.from()),
+                    en_passant_index: self.en_passant_index,
+                }
             },
-        };
-        self.color = self.color.other();
-    }
-
-    fn apply_move_normal(&mut self, from: u8, to: u8) -> Option<u8> {
-        assert!(self.we().bitset().has(from));
-        if self.apply_move_en_passant(from, to) {
-            None
-        } else if self.apply_move_castle(from, to) {
-            None
-        } else {
-            let piece = self.we().which_piece(from);
-            self.we_mut().move_piece(from, to);
-            self.enemy_mut().set_piece_none(to);
-
-            self.disable_castle(from, to);
-            Self::possible_en_passant(piece, from, to)
+            SearchMoveKind::Capture => {
+                let captured_piece = self.enemy().which_piece(mov.to());
+                self.enemy_mut()
+                    .piece_mut(captured_piece)
+                    .clear(mov.to());
+                self.we_mut()
+                    .piece_mut(mov.piece())
+                    .mov(mov.from(), mov.to());
+                UndoSearchMove::Capture {
+                    piece: mov.piece(),
+                    from: mov.from(),
+                    to: mov.to(),
+                    captured_piece,
+                    we_can_castle: self.move_disable_castle(mov.piece(), mov.from()),
+                    enemy_can_castle: self.capture_disable_castle(mov.to()),
+                    en_passant_index: self.en_passant_index,
+                }
+            },
+            SearchMoveKind::EnPassant => {
+                let en_passant_index = self.en_passant_index.unwrap();
+                self.we_mut().piece_mut(Piece::Pawn).mov(mov.from(), mov.to());
+                self.enemy_mut().piece_mut(Piece::Pawn).clear(en_passant_index);
+                UndoSearchMove::EnPassant {
+                    from: mov.from(),
+                    to: mov.to(),
+                    en_passant_index: self.en_passant_index,
+                }
+            },
+            SearchMoveKind::Castle => {
+                let we_can_castle = if mov == SearchMove::castle_left(self.color) {
+                    self.castle_left_apply()
+                } else {
+                    debug_assert_eq!(mov, SearchMove::castle_right(self.color));
+                    self.castle_right_apply()
+                };
+                UndoSearchMove::Castle {
+                    from: mov.from(),
+                    to: mov.to(),
+                    we_can_castle,
+                    en_passant_index: self.en_passant_index,
+                }
+            },
+            SearchMoveKind::Promotion => {
+                self.we_mut().piece_mut(Piece::Pawn).clear(mov.from());
+                self.we_mut().piece_mut(mov.promotion_piece()).set(mov.to());
+                UndoSearchMove::Promotion {
+                    from: mov.from(),
+                    to: mov.to(),
+                    promotion_piece: mov.promotion_piece(),
+                    en_passant_index: self.en_passant_index,
+                }
+            },
+            SearchMoveKind::PromotionCapture => {
+                let captured_piece = self.enemy().which_piece(mov.to());
+                self.enemy_mut()
+                    .piece_mut(captured_piece)
+                    .clear(mov.to());
+                self.we_mut().piece_mut(Piece::Pawn).clear(mov.from());
+                self.we_mut().piece_mut(mov.promotion_piece()).set(mov.to());
+                UndoSearchMove::PromotionCapture {
+                    from: mov.from(),
+                    to: mov.to(),
+                    promotion_piece: mov.promotion_piece(),
+                    captured_piece,
+                    enemy_can_castle: self.capture_disable_castle(mov.to()),
+                    en_passant_index: self.en_passant_index,
+                }
+            },
+            SearchMoveKind::PawnDouble => {
+                self.we_mut()
+                    .piece_mut(Piece::Pawn)
+                    .mov(mov.from(), mov.to());
+                UndoSearchMove::PawnDouble {
+                    from: mov.from(),
+                    to: mov.to(),
+                    en_passant_index: self.en_passant_index,
+                }
+            },
         }
     }
 
-    fn apply_move_en_passant(&mut self, from: u8, to: u8) -> bool {
-        let Some(en_passant_index) = self.en_passant_index else {
-            return false;
-        };
-        if !self.we().pawns().has(from) {
-            return false;
-        }
-        let mov = Move::Normal { from, to };
-        let is_en_passant = if Some(mov) == Move::en_passant_left(self.color, en_passant_index) {
-            debug_assert!(self.we()
-                .has_en_passant_left(self.enemy(), en_passant_index));
-            true
-        } else if Some(mov) == Move::en_passant_right(self.color, en_passant_index) {
-            debug_assert!(self.we()
-                .has_en_passant_right(self.enemy(), en_passant_index));
-            true
-        } else {
-            false
-        };
-        if !is_en_passant {
-            return false;
-        }
-        self.we_mut().move_piece(from, to);
-        self.enemy_mut().remove_piece(en_passant_index);
-        true
-    }
-
-    fn disable_castle(&mut self, from: u8, to: u8) {
-        if from == self.color.king_starting_index() || to == self.color.king_starting_index() {
+    fn move_disable_castle(&mut self, piece: Piece, from: u8) -> CanCastle {
+        let old_can_castle = self.we().can_castle;
+        if piece == Piece::King {
             self.we_mut().disable_castle();
-        } else if from == self.color.rook_left_starting_index() || to == self.color.rook_left_starting_index() {
-            self.we_mut().disable_castle_left();
-        } else if from == self.color.rook_right_starting_index() || to == self.color.rook_right_starting_index() {
-            self.we_mut().disable_castle_right();
+        } else if piece == Piece::Rook {
+            if from == self.color.rook_left_starting_index() {
+                self.we_mut().disable_castle_left();
+            } else if from == self.color.rook_right_starting_index() {
+                self.we_mut().disable_castle_right();
+            }
         }
+        old_can_castle
     }
 
-    fn apply_move_castle(&mut self, from: u8, to: u8) -> bool {
-        if from != self.color.king_starting_index() || !self.we().can_castle_any() {
-            return false;
+    fn capture_disable_castle(&mut self, to: u8) -> CanCastle {
+        let old_can_castle = self.enemy().can_castle;
+        if to == self.color.other().rook_left_starting_index() {
+            self.enemy_mut().disable_castle_left();
+        } else if to == self.color.other().rook_right_starting_index() {
+            self.enemy_mut().disable_castle_right();
         }
-        if to == from-2 {
-            assert!(self.we().can_castle_left());
-            self.castle_left_apply();
-            true
-        } else if to == from+2 {
-            assert!(self.we().can_castle_right());
-            self.castle_right_apply();
-            true
-        } else {
-            false
-        }
+        old_can_castle
     }
 
-    fn castle_left_apply(&mut self) {
+    fn castle_left_apply(&mut self) -> CanCastle {
         let king_from = self.color.king_starting_index();
         let king_to = self.color.king_starting_index() - 2;
         let rook_left_starting_index = self.color.rook_left_starting_index();
         let first_row = self.color.first_row();
 
-        self.we_mut().move_piece(king_from, king_to);
-        self.we_mut().move_piece(
+        self.we_mut().piece_mut(Piece::King).mov(king_from, king_to);
+        self.we_mut().piece_mut(Piece::Rook).mov(
             rook_left_starting_index,
             position_to_index(3, first_row),
         );
+        let old_can_castle = self.we().can_castle;
         self.we_mut().disable_castle();
+        old_can_castle
     }
-    
-    fn castle_right_apply(&mut self) {
+
+    fn castle_right_apply(&mut self) -> CanCastle {
         let king_from = self.color.king_starting_index();
         let king_to = self.color.king_starting_index() + 2;
         let rook_right_starting_index = self.color.rook_right_starting_index();
         let first_row = self.color.first_row();
 
-        self.we_mut().move_piece(king_from, king_to);
-        self.we_mut().move_piece(
+        self.we_mut().piece_mut(Piece::King).mov(king_from, king_to);
+        self.we_mut().piece_mut(Piece::Rook).mov(
             rook_right_starting_index,
             position_to_index(5, first_row),
         );
+        let old_can_castle = self.we().can_castle;
         self.we_mut().disable_castle();
-    }
-
-    fn apply_move_promotion(&mut self, piece: Piece, from: u8, to: u8) {
-        debug_assert!(self.we().pawns().has(from));
-        self.we_mut().remove_piece(from);
-        self.enemy_mut().set_piece_none(to);
-        self.we_mut().place_piece(to, piece);
-    }
-
-    fn possible_en_passant(piece: Piece, from: u8, to: u8) -> Option<u8> {
-        if piece != Piece::Pawn {
-            return None;
-        }
-        let (from_x, from_y) = index_to_position(from);
-        let (to_x, to_y) = index_to_position(to);
-        if from_x == to_x && (from_y+2 == to_y || from_y.checked_sub(2) == Some(to_y)) {
-            Some(to)
-        } else {
-            None
-        }
+        old_can_castle
     }
 
     pub fn fill_special_moves<'a>(&mut self, builder: &'a mut SearchMovesBuilder) {
@@ -448,19 +459,31 @@ impl Board {
                 Color::White => Moves::white_pawn_promotion(all_pieces, from, enemy_pieces),
                 Color::Black => Moves::black_pawn_promotion(all_pieces, from, enemy_pieces),
             };
-            builder.push_special_promotion_moves(from, pawn_promotion);
+            for to in pawn_promotion.moves.indices() {
+                for promotion_piece in PROMOTION_PIECES {
+                    builder.push_special_move(SearchMove::promotion(from, to, promotion_piece));
+                }
+            }
+            for to in pawn_promotion.captures.indices() {
+                for promotion_piece in PROMOTION_PIECES {
+                    builder.push_special_move(SearchMove::promotion_capture(from, to, promotion_piece));
+                }
+            }
+
             let pawn_double = match self.color {
                 Color::White => Moves::white_pawn_double(all_pieces, from, enemy_pieces),
                 Color::Black => Moves::black_pawn_double(all_pieces, from, enemy_pieces),
             };
-            builder.push_special_normal_moves(from, pawn_double);
+            for to in pawn_double.moves.indices() {
+                builder.push_special_move(SearchMove::pawn_double(from, to));
+            }
         }
 
         if self.can_castle_left() {
-            builder.push_special_move(Move::castle_left(self.color));
+            builder.push_special_move(SearchMove::castle_left(self.color));
         }
         if self.can_castle_right() {
-            builder.push_special_move(Move::castle_right(self.color));
+            builder.push_special_move(SearchMove::castle_right(self.color));
         }
 
         if let Some(en_passant_index) = self.en_passant_index {
@@ -486,10 +509,10 @@ impl Board {
     
         for shift in 0..=2 {
             let (from, to) = (king_starting_index, king_starting_index+shift);
-            self.we_mut().move_piece(from, to);
+            self.we_mut().piece_mut(Piece::King).mov(from, to);
             let check = self.enemy()
                 .has_check(self.we(), self.color.other());
-            self.we_mut().move_piece(to, from);
+            self.we_mut().piece_mut(Piece::King).mov(to, from);
             if check {
                 return false;
             }
@@ -516,9 +539,9 @@ impl Board {
     
         for shift in 0..=2 {
             let (from, to) = (king_starting_index, king_starting_index-shift);
-            self.we_mut().move_piece(from, to);
+            self.we_mut().piece_mut(Piece::King).mov(from, to);
             let check = self.enemy().has_check(self.we(), self.color.other());
-            self.we_mut().move_piece(to, from);
+            self.we_mut().piece_mut(Piece::King).mov(to, from);
             if check {
                 return false;
             }
@@ -527,20 +550,52 @@ impl Board {
     }
 
     fn fill_en_passant(&self, en_passant_index: u8, builder: &mut SearchMovesBuilder) {
+        // TODO: Check nothing can be captured with the en passant move.
         if self.we().has_en_passant_left(self.enemy(), en_passant_index) {
-            builder.push_special_move(Move::en_passant_left(self.color, en_passant_index).unwrap());
+            builder.push_special_move(SearchMove::en_passant_left(self.color, en_passant_index).unwrap());
         }
 
         if self.we().has_en_passant_right(self.enemy(), en_passant_index) {
-            builder.push_special_move(Move::en_passant_right(self.color, en_passant_index).unwrap());
+            builder.push_special_move(SearchMove::en_passant_right(self.color, en_passant_index).unwrap());
         }
     }
+}
+
+#[repr(u8)]
+pub enum UndoSearchMove {
+    NonCapture {
+        piece: Piece,
+        from: u8,
+        to: u8,
+        we_can_castle: CanCastle,
+        en_passant_index: Option<u8>,
+    },
+    Capture {
+        piece: Piece,
+        from: u8,
+        to: u8,
+        captured_piece: Piece,
+        we_can_castle: CanCastle,
+        enemy_can_castle: CanCastle,
+        en_passant_index: Option<u8>,
+    },
+    EnPassant { from: u8, to: u8, en_passant_index: Option<u8>, },
+    Castle { from: u8, to: u8, we_can_castle: CanCastle, en_passant_index: Option<u8>, },
+    Promotion { from: u8, to: u8, promotion_piece: Piece, en_passant_index: Option<u8>, },
+    PromotionCapture {
+        from: u8,
+        to: u8,
+        promotion_piece: Piece,
+        captured_piece: Piece,
+        enemy_can_castle: CanCastle,
+        en_passant_index: Option<u8>,
+    },
+    PawnDouble { from: u8, to: u8, en_passant_index: Option<u8>, }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlayerBoard {
     bitsets: [Bitset; 7],
-    piece_board: [Piece; 64], // TODO: could be packed smaller
     pub can_castle: CanCastle,
 }
 
@@ -581,11 +636,13 @@ impl PlayerBoard {
     }
 
     pub fn which_piece(&self, index: u8) -> Piece {
-        self.piece_board[index as usize]
-    }
-
-    fn piece_board_set(&mut self, index: u8, piece: Piece) {
-        self.piece_board[index as usize] = piece;
+        let piece = u32::from(self.pawns().has(index))*Piece::Pawn.to_u32()
+            + u32::from(self.knights().has(index))*Piece::Knight.to_u32()
+            + u32::from(self.bishops().has(index))*Piece::Bishop.to_u32()
+            + u32::from(self.rooks().has(index))*Piece::Rook.to_u32()
+            + u32::from(self.queens().has(index))*Piece::Queen.to_u32()
+            + u32::from(self.king().has(index))*Piece::King.to_u32();
+        Piece::from_u32_fast(piece)
     }
 
     fn check(&self) -> Result<()> {
@@ -631,33 +688,6 @@ impl PlayerBoard {
             bitset |= self.bitsets[i];
         }
         bitset
-    }
-
-    pub fn move_piece(&mut self, from: u8, to: u8) {
-        let piece = self.which_piece(from);
-        debug_assert_ne!(piece, Piece::None);
-        self.piece_mut(piece).mov(from, to);
-        self.piece_board_set(from, Piece::None);
-        debug_assert_eq!(self.which_piece(to), Piece::None);
-        self.piece_board_set(to, piece);
-    }
-
-    pub fn set_piece_none(&mut self, index: u8) {
-        let piece = self.which_piece(index);
-        self.piece_mut(piece).clear(index);
-        self.piece_board_set(index, Piece::None);
-    }
-
-    pub fn remove_piece(&mut self, index: u8) {
-        debug_assert_ne!(self.which_piece(index), Piece::None);
-        self.set_piece_none(index);
-    }
-
-    pub fn place_piece(&mut self, index: u8, piece: Piece) {
-        debug_assert_eq!(self.which_piece(index), Piece::None);
-        debug_assert_ne!(piece, Piece::None);
-        self.piece_mut(piece).set(index);
-        self.piece_board_set(index, piece);
     }
 
     fn score(&self, tables: &PieceSquareTables, is_end_game: bool) -> i32 {
@@ -725,10 +755,6 @@ impl PlayerBoard {
         !right_neighbour_pawn.is_empty()
     }
 
-    pub fn can_castle_any(&self) -> bool {
-        self.can_castle_left() || self.can_castle_right()
-    }
-
     pub fn can_castle_left(&self) -> bool {
         self.can_castle.left
     }
@@ -750,9 +776,9 @@ impl PlayerBoard {
         self.can_castle.right = false;
     }
 
-    fn fill_bitsets(&mut self) {
-        for index in 0..64 {
-            let piece = self.which_piece(index);
+    fn fill_bitsets(&mut self, pieces: &[Piece; 64]) {
+        for (index, piece) in pieces.iter().copied().enumerate() {
+            let index = u8::try_from(index).unwrap();
             if piece != Piece::None {
                 self.piece_mut(piece).set(index);
             }
@@ -772,28 +798,47 @@ impl PlayerBoard {
             match we_color {
                 Color::White => builder.push_simple_moves(
                     from,
+                    Piece::Pawn,
                     Moves::white_pawn_normal_single_without_en_passant(all_pieces, from, enemy_pieces),
                 ),
                 Color::Black => builder.push_simple_moves(
                     from,
+                    Piece::Pawn,
                     Moves::black_pawn_normal_single_without_en_passant(all_pieces, from, enemy_pieces),
                 ),
             };
         }
         for from in self.knights().indices() {
-            builder.push_simple_moves(from, Moves::knight(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(
+                from,
+                Piece::Knight,
+                Moves::knight(all_pieces, from, enemy_pieces),
+            );
         }
         for from in self.bishops().indices() {
-            builder.push_simple_moves(from, Moves::bishop(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(
+                from,
+                Piece::Bishop,
+                Moves::bishop(all_pieces, from, enemy_pieces),
+            );
         }
         for from in self.rooks().indices() {
-            builder.push_simple_moves(from, Moves::rook(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(
+                from,
+                Piece::Rook,
+                Moves::rook(all_pieces, from, enemy_pieces),
+            );
         }
         for from in self.queens().indices() {
-            builder.push_simple_moves(from, Moves::queen(all_pieces, from, enemy_pieces));
+            builder.push_simple_moves(
+                from,
+                Piece::Queen,
+                Moves::queen(all_pieces, from, enemy_pieces),
+            );
         }
         builder.push_simple_moves(
             self.king().first_index(),
+            Piece::King,
             Moves::king(all_pieces, self.king().first_index(), enemy_pieces),
         );
     }
@@ -922,8 +967,8 @@ mod tests {
 
         let black_queen = board.black.queens().first_index();
         let white_queen = board.white.queens().first_index();
-        board.black.move_piece(black_queen, white_queen);
-        board.white.remove_piece(white_queen);
+        board.black.piece_mut(Piece::Queen).mov(black_queen, white_queen);
+        board.white.piece_mut(Piece::Queen).clear(white_queen);
         assert!(!board.white.has_check(&board.black, Color::White));
         assert!(board.black.has_check(&board.white, Color::Black));
     }

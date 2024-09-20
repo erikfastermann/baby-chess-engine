@@ -13,10 +13,9 @@ pub fn search(board: &mut Board, depth: usize, mut alpha: i32, beta: i32) -> i32
     let moves = moves_buffer.sort(board);
 
     // TODO: check found moves count
-    // TODO: sort moves
 
-    for mov in moves {
-        let score = search_move(board, &old_board, *mov, depth, alpha, beta);
+    for mov in moves.iter().copied() {
+        let score = search_move(board, &old_board, mov, depth, alpha, beta);
         if score >= beta {
             return beta;
         }
@@ -34,22 +33,9 @@ pub fn search_move(
     alpha: i32,
     beta: i32,
 ) -> i32 {
-    match mov {
-        SearchMove::Simple { from, to } => {
-            let en_passant_index = board.en_passant_index;
-            board.en_passant_index = None;
-            let captured_piece = board.apply_simple(from, to);
-            let score = -search(board, depth - 1, -beta, -alpha);
-            board.un_apply_simple(from, to, captured_piece);
-            board.en_passant_index = en_passant_index;
-            score
-        },
-        SearchMove::Special(mov) => {
-            board.apply_move_unchecked(mov);
-            let score = -search(board, depth - 1, -beta, -alpha);
-            // TODO: un apply move
-            board.reset_with(old_board);
-            score
-        },
-    }
+    board.apply_search_move_unchecked(mov);
+    let score = -search(board, depth - 1, -beta, -alpha);
+    // TODO: Undo move.
+    board.reset_with(old_board);
+    score
 }

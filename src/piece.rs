@@ -60,6 +60,25 @@ impl Piece {
         }
     }
 
+    pub fn from_u32_fast(n: u32) -> Self {
+        match n & 0b111 {
+            0 => Piece::None,
+            1 => Piece::King,
+            2 => Piece::Queen,
+            3 => Piece::Rook,
+            4 => Piece::Bishop,
+            5 => Piece::Knight,
+            6 => Piece::Pawn,
+            // Extra case so the compiler does not generate unnecessary branch.
+            7 => Piece::None,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn to_u32(self) -> u32 {
+        self as u32
+    }
+
     pub fn to_usize(self) -> usize {
         self as usize
     }

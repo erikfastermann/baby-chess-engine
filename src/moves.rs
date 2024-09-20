@@ -1,6 +1,6 @@
 use std::{iter::zip, cmp::Ordering};
 
-use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::{PlayerBoard, Board}, mov::{Move, SearchMove}, piece::{PROMOTION_PIECES, Piece}};
+use crate::{bitset::{Bitset, self, ROW_0, COLUMN_0, COLUMN_7, ROW_6, ROW_1, ROW_7}, position::{position_to_index, index_to_position}, board::{PlayerBoard, Board}, mov::SearchMove, piece::Piece};
 
 static mut DIAGONALS_LEFT: [Bitset; 64] = [bitset::ZERO; 64];
 static mut DIAGONALS_RIGHT: [Bitset; 64] = [bitset::ZERO; 64];
@@ -399,51 +399,25 @@ pub struct SearchMovesBuilder {
 impl SearchMovesBuilder {
     pub fn new() -> Self {
         Self {
-            buffer: [SearchMove::Simple { from: 0, to: 0 }; MAX_MOVES],
+            buffer: [SearchMove::UNINITIALIZED; MAX_MOVES],
             index: 0,
         }
     }
 
-    pub fn push_simple_moves(&mut self, from: u8, moves: Moves) {
+    pub fn push_simple_moves(&mut self, from: u8, piece: Piece, moves: Moves) {
         for to in moves.moves.indices() {
-            self.buffer[self.index] = SearchMove::Simple { from, to };
+            self.buffer[self.index] = SearchMove::non_capture(piece, from, to);
             self.index += 1;
         }
         for to in moves.captures.indices() {
-            self.buffer[self.index] = SearchMove::Simple { from, to };
+            self.buffer[self.index] = SearchMove::capture(piece, from, to);
             self.index += 1;
         }
     }
 
-    pub fn push_special_move(&mut self, mov: Move) {
-        self.buffer[self.index] = SearchMove::Special(mov);
+    pub fn push_special_move(&mut self, mov: SearchMove) {
+        self.buffer[self.index] = mov;
         self.index += 1;
-    }
-
-    pub fn push_special_normal_moves(&mut self, from: u8, moves: Moves) {
-        for to in moves.moves.indices() {
-            self.buffer[self.index] = SearchMove::Special(Move::Normal { from, to });
-            self.index += 1;
-        }
-        for to in moves.captures.indices() {
-            self.buffer[self.index] = SearchMove::Special(Move::Normal { from, to });
-            self.index += 1;
-        }
-    }
-
-    pub fn push_special_promotion_moves(&mut self, from: u8, moves: Moves) {
-        for to in moves.moves.indices() {
-            for piece in PROMOTION_PIECES {
-                self.buffer[self.index] = SearchMove::Special(Move::Promotion { piece, from, to });
-                self.index += 1;
-            }
-        }
-        for to in moves.captures.indices() {
-            for piece in PROMOTION_PIECES {
-                self.buffer[self.index] = SearchMove::Special(Move::Promotion { piece, from, to });
-                self.index += 1;
-            }
-        }
     }
 
     fn as_slice_mut(&mut self) -> &mut [SearchMove] {
