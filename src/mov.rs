@@ -70,7 +70,7 @@ impl fmt::Debug for Move {
             "{:?}: moved={:?} move={}",
             self.kind(),
             self.piece(),
-            self.to_move().to_long_algebraic_notation(),
+            self.to_user_move().to_long_algebraic_notation(),
         )
     }
 }
@@ -222,7 +222,7 @@ impl Move {
         )
     }
 
-    pub fn to_move(self) -> UserMove {
+    pub fn to_user_move(self) -> UserMove {
         if self.is_promotion() {
             UserMove::Promotion {
                 piece: self.promotion_piece(),

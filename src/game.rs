@@ -29,9 +29,7 @@ impl Game {
     }
 
     fn legal_moves(&self) -> Vec<Move> {
-        let is_draw = self.board.is_draw_fast()
-            || self.full_position_counts.values().copied().any(|n| n >= 3);
-        if is_draw {
+        if self.repetition_or_50_move_rule() {
             return Vec::new();
         }
         let mut next_game = self.clone();
@@ -69,20 +67,15 @@ impl Game {
             .has_check(self.board.player_board(we.other()), we)
     }
 
-    fn is_draw(&self, next_board: &mut Board, mov: Move) -> bool {
-        next_board.apply_move_unchecked(mov);
-        let count = self.full_position_counts.get(&next_board.clone().to_position_board())
-            .copied()
-            .unwrap_or(0);
-        let is_draw = next_board.is_draw_fast() || count > 2;
-        next_board.reset_with(&self.board);
-        is_draw
+    fn repetition_or_50_move_rule(&self) -> bool {
+        self.board.is_draw_fast()
+            || self.full_position_counts.values().copied().any(|n| n >= 3)
     }
 
     pub fn apply_move(&mut self, user_move: UserMove) -> Result<()> {
         let mov = self.legal_moves()
             .iter()
-            .find(|mov| mov.to_move() == user_move)
+            .find(|mov| mov.to_user_move() == user_move)
             .copied();
         if let Some(mov) = mov {
             self.apply_move_unchecked(mov);
@@ -101,41 +94,16 @@ impl Game {
     }
 
     pub fn best_move(&self) -> Result<(UserMove, i32)> {
-        let mut next_board = self.board.clone();
-        // TODO: Include repetitions if it might be favorable for us.
-        let moves = {
-            let legal_moves = self.legal_moves();
-            let moves: Vec<_> = legal_moves
-                .iter()
-                .copied()
-                .filter(|mov| !self.is_draw(&mut next_board, *mov))
-                .collect();
-            if moves.is_empty() { legal_moves } else { moves }
-        };
-
-        let mut moves_with_score = Vec::new();
-        for mov in moves {
-            next_board.apply_move_unchecked(mov);
-            let score = -Searcher::new(config::DEFAULT_DEPTH - 1).run(&mut next_board);
-            next_board.reset_with(&self.board);
-            moves_with_score.push((mov, score));
+        if self.legal_moves().is_empty() {
+            if self.has_check(self.board.color.other()) {
+                return Err(EndOfGameError::Checkmate.into());
+            } else {
+                return Err(EndOfGameError::Other.into());
+            }
         }
-
-        moves_with_score.sort_by(|(_, score_a), (_, score_b)| {
-            score_a.cmp(score_b).reverse()
-        });
-        dbg!(&moves_with_score);
-        let best_move = moves_with_score.first().copied();
-        match best_move {
-            Some((mov, score)) => Ok((mov.to_move(), score)),
-            None => {
-                if self.has_check(self.board.color.other()) {
-                    Err(EndOfGameError::Checkmate.into())
-                } else {
-                    Err(EndOfGameError::Other.into())
-                }
-            },
-        }
+        let (mov, score) = Searcher::new(config::DEFAULT_DEPTH)
+            .run(&mut self.board.clone());
+        Ok((mov.to_user_move(), score))
     }
 }
 
