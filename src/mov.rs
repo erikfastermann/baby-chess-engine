@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{piece::Piece, position::{index_to_position, position_to_index}, result::Result, color::Color};
+use crate::{color::Color, piece::Piece, position::{self, index_to_position, position_to_index}, result::Result};
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,8 +27,8 @@ impl UserMove {
             return Err(format!("expected chess notation, got '{}'", notation).into());
         }
         let notation = notation.as_bytes();
-        let from = Self::chess_position_to_index(&notation[..2])?;
-        let to = Self::chess_position_to_index(&notation[2..4])?;
+        let from = position::human_position_to_index(&notation[..2])?;
+        let to = position::human_position_to_index(&notation[2..4])?;
         if notation.len() == 5 {
             let symbol = char::from(notation[4]);
             let promote_to = Piece::from_symbol(symbol)?;
@@ -53,24 +53,6 @@ impl UserMove {
         }
     }
 
-    pub fn chess_position_to_index(raw_position: &[u8]) -> Result<u8> {
-        if raw_position.len() != 2 {
-            return Err(format!(
-                "expected square, got '{}'",
-                String::from_utf8_lossy(raw_position),
-            ).into());
-        }
-        let (raw_x, raw_y) = (raw_position[0], raw_position[1]);
-        if !(b'a'..=b'h').contains(&raw_x) {
-            return Err(format!("expected file, got '{}'", char::from(raw_x)).into());
-        }
-        if !(b'1'..=b'8').contains(&raw_y) {
-            return Err(format!("expected rank, got '{}'", char::from(raw_y)).into());
-        }
-        let (x, y) = (raw_x - b'a', 7 - (raw_y - b'1'));
-        Ok(position_to_index(x, y))
-    }
-
     fn long_algebraic_notation_normal(from_index: u8, to_index: u8) -> String {
         let (from_x, from_y) = crate::fmt::index_to_chess_position(from_index);
         let (to_x, to_y) = crate::fmt::index_to_chess_position(to_index);
@@ -85,12 +67,10 @@ impl fmt::Debug for Move {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:?}: moved={:?} from={} to={} promotion={:?}",
+            "{:?}: moved={:?} move={}",
             self.kind(),
             self.piece(),
-            self.from(),
-            self.to(),
-            self.promotion_piece(),
+            self.to_move().to_long_algebraic_notation(),
         )
     }
 }

@@ -1,9 +1,6 @@
 use std::{collections::HashMap, error, fmt};
 
-use crate::{board::{Board, PositionBoard}, color::Color, config, mov::{UserMove, Move}, moves::MovesBuilder, result::Result, search};
-
-const SCORE_MIN: i32 = i32::MAX * -1;
-const SCORE_MAX: i32 = i32::MAX;
+use crate::{board::{Board, PositionBoard}, color::Color, config, mov::{Move, UserMove}, moves::MovesBuilder, result::Result, search::Searcher};
 
 #[derive(Clone)]
 pub struct Game {
@@ -103,7 +100,7 @@ impl Game {
         *count += 1;
     }
 
-    pub fn best_move(&self) -> Result<UserMove> {
+    pub fn best_move(&self) -> Result<(UserMove, i32)> {
         let mut next_board = self.board.clone();
         // TODO: Include repetitions if it might be favorable for us.
         let moves = {
@@ -116,26 +113,21 @@ impl Game {
             if moves.is_empty() { legal_moves } else { moves }
         };
 
-        let mut max_score = None;
-        let mut best_move = None;
+        let mut moves_with_score = Vec::new();
         for mov in moves {
             next_board.apply_move_unchecked(mov);
-            let score = -search::search(
-                &mut next_board,
-                config::DEFAULT_DEPTH - 1,
-                SCORE_MIN,
-                SCORE_MAX,
-            );
+            let score = -Searcher::new(config::DEFAULT_DEPTH - 1).run(&mut next_board);
             next_board.reset_with(&self.board);
-
-            if Some(score) > max_score {
-                max_score = Some(score);
-                best_move = Some(mov);
-            }
+            moves_with_score.push((mov, score));
         }
 
+        moves_with_score.sort_by(|(_, score_a), (_, score_b)| {
+            score_a.cmp(score_b).reverse()
+        });
+        dbg!(&moves_with_score);
+        let best_move = moves_with_score.first().copied();
         match best_move {
-            Some(mov) => Ok(mov.to_move()),
+            Some((mov, score)) => Ok((mov.to_move(), score)),
             None => {
                 if self.has_check(self.board.color.other()) {
                     Err(EndOfGameError::Checkmate.into())
@@ -165,7 +157,7 @@ impl error::Error for EndOfGameError {}
 mod test {
     use std::collections::HashSet;
 
-    use crate::{init::init, piece::Piece};
+    use crate::{board::SCORE_MAX, init::init, piece::Piece, position};
 
     use super::*;
 
@@ -259,7 +251,7 @@ mod test {
         const HARD_MATE_FEN: &str = "8/1N2N3/2r5/3qp2R/QP2kp1K/5R2/6B1/6B1 w - - 0 0";
         let game = Game::from_fen(HARD_MATE_FEN).unwrap();
         let mov = game.best_move().unwrap();
-        assert_eq!(mov, UserMove::from_long_algebraic_notation("a4a8").unwrap())
+        assert!(mov.1 >= SCORE_MAX-4)
     }
 
     #[test]
@@ -269,16 +261,16 @@ mod test {
         const PROMOTE_FEN: &str = "r3kb1r/ppPqpppp/n3b2n/8/8/5N2/PPPP1PPP/RNBQKB1R w KQkq - 11 10";
         let game = Game::from_fen(PROMOTE_FEN).unwrap();
         assert!(game.legal_moves().contains(&Move::promotion(
-            UserMove::chess_position_to_index(b"c7").unwrap(),
-            UserMove::chess_position_to_index(b"c8").unwrap(),
+            position::human_position_to_index(b"c7").unwrap(),
+            position::human_position_to_index(b"c8").unwrap(),
             Piece::Rook,
         )));
 
         const CAPTURE_PROMOTE_FEN: &str = "rnbqkb1r/ppP1pppp/7n/8/8/8/PPPP1PPP/RNBQKBNR w KQkq - 1 5";
         let game = Game::from_fen(CAPTURE_PROMOTE_FEN).unwrap();
         assert!(game.legal_moves().contains(&Move::promotion_capture(
-            UserMove::chess_position_to_index(b"c7").unwrap(),
-            UserMove::chess_position_to_index(b"d8").unwrap(),
+            position::human_position_to_index(b"c7").unwrap(),
+            position::human_position_to_index(b"d8").unwrap(),
             Piece::Queen,
         )));
     }

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, config, mov::{UserMove, Move, MoveKind}, moves::{Moves, MovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{index_to_position, position_to_index}, result::Result};
+use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, config, mov::{Move, MoveKind}, moves::{Moves, MovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{self, index_to_position, position_to_index}, result::Result};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PositionBoard {
@@ -149,7 +149,7 @@ impl Board {
                 return Err(InvalidFenError.into());
         }
         let en_passant_index = if en_passant_raw != "-" {
-            let en_passant_skipped_index = UserMove::chess_position_to_index(
+            let en_passant_skipped_index = position::human_position_to_index(
                 en_passant_raw.as_bytes(),
             )?;
             let (x, y) = index_to_position(en_passant_skipped_index);
@@ -261,7 +261,7 @@ impl Board {
         Ok(())
     }
 
-    fn check_fast(&self) -> Result<()> {
+    pub fn check_fast(&self) -> Result<()> {
         self.white.check()?;
         self.black.check()?;
         assert_eq!(
@@ -642,6 +642,9 @@ pub struct CanCastle {
     right: bool,
 }
 
+pub const SCORE_MIN: i32 = i32::MAX * -1;
+pub const SCORE_MAX: i32 = i32::MAX;
+
 impl PlayerBoard {
     pub fn pawns(&self) -> Bitset {
         self.bitsets[Piece::Pawn.to_usize()]
@@ -1018,7 +1021,7 @@ mod tests {
         ).unwrap();
         assert_eq!(
             board.en_passant_index.unwrap(),
-            UserMove::chess_position_to_index(b"d5").unwrap(),
+            position::human_position_to_index(b"d5").unwrap(),
         )
     }
 }

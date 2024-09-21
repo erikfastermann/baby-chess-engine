@@ -36,12 +36,16 @@ impl UCI {
                 Vec::new()
             },
             ["position", "startpos", "moves", raw_moves @ ..] => {
-                // TODO: fen
                 self.apply_moves(raw_moves)?;
                 Vec::new()
             },
+            ["position", "fen", fen @ ..] => {
+                let fen = fen.join(" ");
+                self.game = Game::from_fen(&fen)?;
+                Vec::new()
+            }
             ["go", ..] => {
-                let mov = self.game.best_move()?;
+                let mov = self.game.best_move()?.0;
                 vec![format!("bestmove {}", mov.to_long_algebraic_notation())]
             }
             ["stop"] => vec![],

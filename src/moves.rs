@@ -1,6 +1,6 @@
 use std::{iter::zip, cmp::Ordering};
 
-use crate::{bitset::{self, Bitset, COLUMN_0, COLUMN_7, ROW_0, ROW_1, ROW_6, ROW_7}, board::{Board, PlayerBoard, MAX_MOVES_SINCE_CAPTURE_OR_PAWN}, mov::Move, piece::Piece, position::{index_to_position, position_to_index}};
+use crate::{bitset::{self, Bitset, COLUMN_0, COLUMN_7, ROW_0, ROW_1, ROW_6, ROW_7}, board::{Board, PlayerBoard}, mov::Move, piece::Piece, position::{index_to_position, position_to_index}};
 
 static mut DIAGONALS_LEFT: [Bitset; 64] = [bitset::ZERO; 64];
 static mut DIAGONALS_RIGHT: [Bitset; 64] = [bitset::ZERO; 64];
