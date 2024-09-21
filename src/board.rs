@@ -1,6 +1,14 @@
 use std::fmt;
 
-use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, config, mov::{Move, SearchMove, SearchMoveKind}, moves::{Moves, SearchMovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{index_to_position, position_to_index}, result::Result};
+use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, config, mov::{UserMove, Move, MoveKind}, moves::{Moves, MovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{index_to_position, position_to_index}, result::Result};
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct PositionBoard {
+    black: PlayerBoard,
+    white: PlayerBoard,
+    color: Color,
+    en_passant_index: Option<u8>,
+}
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Board {
@@ -8,7 +16,10 @@ pub struct Board {
     white: PlayerBoard,
     pub color: Color,
     pub en_passant_index: Option<u8>,
+    pub moves_since_capture_or_pawn: u8,
 }
+
+pub const MAX_MOVES_SINCE_CAPTURE_OR_PAWN: u8 = 50;
 
 impl fmt::Display for Board {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -60,6 +71,7 @@ impl Board {
             },
             color: Color::White,
             en_passant_index: None,
+            moves_since_capture_or_pawn: 0,
         };
         board.white.fill_bitsets(&[
                 STARTING_EMPTY_SQUARES.as_slice(),
@@ -85,36 +97,11 @@ impl Board {
         let color_raw = fen_iter.next().ok_or(InvalidFenError)?;
         let castle_raw = fen_iter.next().ok_or(InvalidFenError)?;
         let en_passant_raw = fen_iter.next().ok_or(InvalidFenError)?;
-        fen_iter.next().ok_or(InvalidFenError)?; // TODO: Handle 50 move repetition.
+        let moves_since_capture_or_pawn_raw = fen_iter.next().ok_or(InvalidFenError)?;
         fen_iter.next().ok_or(InvalidFenError)?;
         if fen_iter.next().is_some() {
             return Err(InvalidFenError.into());
         }
-
-        let color = match color_raw {
-            "w" => Color::White,
-            "b" => Color::Black,
-            _ => return Err(InvalidFenError.into()),
-        };
-        if castle_raw != "-"
-            && castle_raw.contains(|ch| !['k', 'q', 'K', 'Q'].contains(&ch)) {
-                return Err(InvalidFenError.into());
-        }
-        let en_passant_index = if en_passant_raw != "-" {
-            let en_passant_skipped_index = Move::chess_position_to_index(
-                en_passant_raw.as_bytes(),
-            )?;
-            let (x, y) = index_to_position(en_passant_skipped_index);
-            let en_passant_index = match y {
-                2 => position_to_index(x, 3),
-                5 => position_to_index(x, 4),
-                _ => return Err(InvalidFenError.into()),
-            };
-            // Checking the pawn exists is done later.
-            Some(en_passant_index)
-        } else {
-            None
-        };
 
         if board_raw.split('/').count() != 8 {
             return Err(InvalidFenError.into());
@@ -152,6 +139,32 @@ impl Board {
             }
         }
 
+        let color = match color_raw {
+            "w" => Color::White,
+            "b" => Color::Black,
+            _ => return Err(InvalidFenError.into()),
+        };
+        if castle_raw != "-"
+            && castle_raw.contains(|ch| !['k', 'q', 'K', 'Q'].contains(&ch)) {
+                return Err(InvalidFenError.into());
+        }
+        let en_passant_index = if en_passant_raw != "-" {
+            let en_passant_skipped_index = UserMove::chess_position_to_index(
+                en_passant_raw.as_bytes(),
+            )?;
+            let (x, y) = index_to_position(en_passant_skipped_index);
+            let en_passant_index = match y {
+                2 => position_to_index(x, 3),
+                5 => position_to_index(x, 4),
+                _ => return Err(InvalidFenError.into()),
+            };
+            // Checking the pawn exists is done later.
+            Some(en_passant_index)
+        } else {
+            None
+        };
+        let moves_since_capture_or_pawn: u8 = moves_since_capture_or_pawn_raw.parse()?;
+
         let mut board = Self {
             black: PlayerBoard {
                 bitsets: [Bitset::zero(); 7],
@@ -169,11 +182,21 @@ impl Board {
             },
             color,
             en_passant_index,
+            moves_since_capture_or_pawn,
         };
         board.white.fill_bitsets(&white_pieces);
         board.black.fill_bitsets(&black_pieces);
         board.check()?;
         Ok(board)
+    }
+
+    pub fn to_position_board(self) -> PositionBoard {
+        PositionBoard {
+            black: self.black,
+            white: self.white,
+            color: self.color,
+            en_passant_index: self.en_passant_index,
+        }
     }
 
     pub fn player_board(&self, color: Color) -> &PlayerBoard {
@@ -246,7 +269,14 @@ impl Board {
             self.bitset().count(),
         );
         assert!(self.bitset().count() <= 32);
+        if self.moves_since_capture_or_pawn > MAX_MOVES_SINCE_CAPTURE_OR_PAWN {
+            return Err("more than 50 moves without capturing a piece or moving a pawn".into());
+        }
         Ok(())
+    }
+
+    pub fn is_draw_fast(&self) -> bool {
+        self.moves_since_capture_or_pawn >= MAX_MOVES_SINCE_CAPTURE_OR_PAWN
     }
 
     fn is_end_game(&self) -> bool {
@@ -286,26 +316,32 @@ impl Board {
         self.black = old.black;
         self.color = old.color;
         self.en_passant_index = old.en_passant_index;
+        self.moves_since_capture_or_pawn = old.moves_since_capture_or_pawn;
     }
 
-    pub fn apply_search_move_unchecked(&mut self, mov: SearchMove) -> UndoSearchMove {
-        let undo = self.apply_search_move_unchecked_inner(mov);
+    pub fn apply_move_unchecked(&mut self, mov: Move) -> UndoMove {
+        let undo = self.apply_move_unchecked_inner(mov);
         self.color = self.color.other();
-        if matches!(mov.kind(), SearchMoveKind::PawnDouble) {
+        if matches!(mov.kind(), MoveKind::PawnDouble) {
             self.en_passant_index = Some(mov.to());
         } else {
             self.en_passant_index = None;
         }
+        if mov.is_capture() || mov.piece() == Piece::Pawn {
+            self.moves_since_capture_or_pawn = 0;
+        } else {
+            self.moves_since_capture_or_pawn += 1;
+        }
         undo
     }
 
-    fn apply_search_move_unchecked_inner(&mut self, mov: SearchMove) -> UndoSearchMove {
+    fn apply_move_unchecked_inner(&mut self, mov: Move) -> UndoMove {
         match mov.kind() {
-            SearchMoveKind::NonCapture => {
+            MoveKind::NonCapture => {
                 self.we_mut()
                     .piece_mut(mov.piece())
                     .mov(mov.from(), mov.to());
-                UndoSearchMove::NonCapture {
+                UndoMove::NonCapture {
                     piece: mov.piece(),
                     from: mov.from(),
                     to: mov.to(),
@@ -313,7 +349,7 @@ impl Board {
                     en_passant_index: self.en_passant_index,
                 }
             },
-            SearchMoveKind::Capture => {
+            MoveKind::Capture => {
                 let captured_piece = self.enemy().which_piece(mov.to());
                 self.enemy_mut()
                     .piece_mut(captured_piece)
@@ -321,7 +357,7 @@ impl Board {
                 self.we_mut()
                     .piece_mut(mov.piece())
                     .mov(mov.from(), mov.to());
-                UndoSearchMove::Capture {
+                UndoMove::Capture {
                     piece: mov.piece(),
                     from: mov.from(),
                     to: mov.to(),
@@ -331,48 +367,48 @@ impl Board {
                     en_passant_index: self.en_passant_index,
                 }
             },
-            SearchMoveKind::EnPassant => {
+            MoveKind::EnPassant => {
                 let en_passant_index = self.en_passant_index.unwrap();
                 self.we_mut().piece_mut(Piece::Pawn).mov(mov.from(), mov.to());
                 self.enemy_mut().piece_mut(Piece::Pawn).clear(en_passant_index);
-                UndoSearchMove::EnPassant {
+                UndoMove::EnPassant {
                     from: mov.from(),
                     to: mov.to(),
                     en_passant_index: self.en_passant_index,
                 }
             },
-            SearchMoveKind::Castle => {
-                let we_can_castle = if mov == SearchMove::castle_left(self.color) {
+            MoveKind::Castle => {
+                let we_can_castle = if mov == Move::castle_left(self.color) {
                     self.castle_left_apply()
                 } else {
-                    debug_assert_eq!(mov, SearchMove::castle_right(self.color));
+                    debug_assert_eq!(mov, Move::castle_right(self.color));
                     self.castle_right_apply()
                 };
-                UndoSearchMove::Castle {
+                UndoMove::Castle {
                     from: mov.from(),
                     to: mov.to(),
                     we_can_castle,
                     en_passant_index: self.en_passant_index,
                 }
             },
-            SearchMoveKind::Promotion => {
+            MoveKind::Promotion => {
                 self.we_mut().piece_mut(Piece::Pawn).clear(mov.from());
                 self.we_mut().piece_mut(mov.promotion_piece()).set(mov.to());
-                UndoSearchMove::Promotion {
+                UndoMove::Promotion {
                     from: mov.from(),
                     to: mov.to(),
                     promotion_piece: mov.promotion_piece(),
                     en_passant_index: self.en_passant_index,
                 }
             },
-            SearchMoveKind::PromotionCapture => {
+            MoveKind::PromotionCapture => {
                 let captured_piece = self.enemy().which_piece(mov.to());
                 self.enemy_mut()
                     .piece_mut(captured_piece)
                     .clear(mov.to());
                 self.we_mut().piece_mut(Piece::Pawn).clear(mov.from());
                 self.we_mut().piece_mut(mov.promotion_piece()).set(mov.to());
-                UndoSearchMove::PromotionCapture {
+                UndoMove::PromotionCapture {
                     from: mov.from(),
                     to: mov.to(),
                     promotion_piece: mov.promotion_piece(),
@@ -381,11 +417,11 @@ impl Board {
                     en_passant_index: self.en_passant_index,
                 }
             },
-            SearchMoveKind::PawnDouble => {
+            MoveKind::PawnDouble => {
                 self.we_mut()
                     .piece_mut(Piece::Pawn)
                     .mov(mov.from(), mov.to());
-                UndoSearchMove::PawnDouble {
+                UndoMove::PawnDouble {
                     from: mov.from(),
                     to: mov.to(),
                     en_passant_index: self.en_passant_index,
@@ -450,7 +486,7 @@ impl Board {
         old_can_castle
     }
 
-    pub fn fill_special_moves<'a>(&mut self, builder: &'a mut SearchMovesBuilder) {
+    pub fn fill_special_moves<'a>(&mut self, builder: &'a mut MovesBuilder) {
         let all_pieces = self.bitset();
         let enemy_pieces = self.enemy().bitset();
 
@@ -461,12 +497,12 @@ impl Board {
             };
             for to in pawn_promotion.moves.indices() {
                 for promotion_piece in PROMOTION_PIECES {
-                    builder.push_special_move(SearchMove::promotion(from, to, promotion_piece));
+                    builder.push_special_move(Move::promotion(from, to, promotion_piece));
                 }
             }
             for to in pawn_promotion.captures.indices() {
                 for promotion_piece in PROMOTION_PIECES {
-                    builder.push_special_move(SearchMove::promotion_capture(from, to, promotion_piece));
+                    builder.push_special_move(Move::promotion_capture(from, to, promotion_piece));
                 }
             }
 
@@ -475,15 +511,15 @@ impl Board {
                 Color::Black => Moves::black_pawn_double(all_pieces, from, enemy_pieces),
             };
             for to in pawn_double.moves.indices() {
-                builder.push_special_move(SearchMove::pawn_double(from, to));
+                builder.push_special_move(Move::pawn_double(from, to));
             }
         }
 
         if self.can_castle_left() {
-            builder.push_special_move(SearchMove::castle_left(self.color));
+            builder.push_special_move(Move::castle_left(self.color));
         }
         if self.can_castle_right() {
-            builder.push_special_move(SearchMove::castle_right(self.color));
+            builder.push_special_move(Move::castle_right(self.color));
         }
 
         if let Some(en_passant_index) = self.en_passant_index {
@@ -549,20 +585,20 @@ impl Board {
         true
     }
 
-    fn fill_en_passant(&self, en_passant_index: u8, builder: &mut SearchMovesBuilder) {
+    fn fill_en_passant(&self, en_passant_index: u8, builder: &mut MovesBuilder) {
         // TODO: Check nothing can be captured with the en passant move.
         if self.we().has_en_passant_left(self.enemy(), en_passant_index) {
-            builder.push_special_move(SearchMove::en_passant_left(self.color, en_passant_index).unwrap());
+            builder.push_special_move(Move::en_passant_left(self.color, en_passant_index).unwrap());
         }
 
         if self.we().has_en_passant_right(self.enemy(), en_passant_index) {
-            builder.push_special_move(SearchMove::en_passant_right(self.color, en_passant_index).unwrap());
+            builder.push_special_move(Move::en_passant_right(self.color, en_passant_index).unwrap());
         }
     }
 }
 
 #[repr(u8)]
-pub enum UndoSearchMove {
+pub enum UndoMove {
     NonCapture {
         piece: Piece,
         from: u8,
@@ -789,7 +825,7 @@ impl PlayerBoard {
         &self,
         enemy: &Self,
         we_color: Color,
-        builder: &'a mut SearchMovesBuilder,
+        builder: &'a mut MovesBuilder,
     ) {
         let enemy_pieces = enemy.bitset();
         let all_pieces = self.bitset() | enemy_pieces;
@@ -982,7 +1018,7 @@ mod tests {
         ).unwrap();
         assert_eq!(
             board.en_passant_index.unwrap(),
-            Move::chess_position_to_index(b"d5").unwrap(),
+            UserMove::chess_position_to_index(b"d5").unwrap(),
         )
     }
 }

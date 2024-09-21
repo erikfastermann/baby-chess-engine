@@ -1,6 +1,6 @@
 use std::{collections::HashMap, error, fmt};
 
-use crate::{board::Board, color::Color, config, mov::{Move, SearchMove}, moves::SearchMovesBuilder, result::Result, search};
+use crate::{board::{Board, PositionBoard}, color::Color, config, mov::{UserMove, Move}, moves::MovesBuilder, result::Result, search};
 
 const SCORE_MIN: i32 = i32::MAX * -1;
 const SCORE_MAX: i32 = i32::MAX;
@@ -8,7 +8,7 @@ const SCORE_MAX: i32 = i32::MAX;
 #[derive(Clone)]
 pub struct Game {
     board: Board,
-    full_position_counts: HashMap<Board, usize>,
+    full_position_counts: HashMap<PositionBoard, usize>,
 }
 
 impl Game {
@@ -17,7 +17,7 @@ impl Game {
             board: Board::start(),
             full_position_counts: HashMap::new(),
         };
-        game.full_position_counts.insert(game.board.clone(), 1);
+        game.full_position_counts.insert(game.board.clone().to_position_board(), 1);
         game
     }
 
@@ -27,16 +27,18 @@ impl Game {
             full_position_counts: HashMap::new(),
         };
         // We don't know the previous positions, so we just insert the current one.
-        game.full_position_counts.insert(game.board.clone(), 1);
+        game.full_position_counts.insert(game.board.clone().to_position_board(), 1);
         Ok(game)
     }
 
-    fn legal_moves(&self) -> Vec<SearchMove> {
-        if self.full_position_counts.values().copied().any(|n| n >= 3) {
+    fn legal_moves(&self) -> Vec<Move> {
+        let is_draw = self.board.is_draw_fast()
+            || self.full_position_counts.values().copied().any(|n| n >= 3);
+        if is_draw {
             return Vec::new();
         }
         let mut next_game = self.clone();
-        let mut builder = SearchMovesBuilder::new();
+        let mut builder = MovesBuilder::new();
         let moves = builder.fill(&mut next_game.board);
         moves.iter()
             .copied()
@@ -44,8 +46,8 @@ impl Game {
             .collect()
     }
 
-    fn move_has_check(&mut self, old_board: &Board, mov: SearchMove) -> bool {
-        self.board.apply_search_move_unchecked(mov);
+    fn move_has_check(&mut self, old_board: &Board, mov: Move) -> bool {
+        self.board.apply_move_unchecked(mov);
         let has_check = self.has_check(self.board.color);
         self.board.reset_with(old_board);
         has_check
@@ -70,7 +72,17 @@ impl Game {
             .has_check(self.board.player_board(we.other()), we)
     }
 
-    pub fn apply_move(&mut self, user_move: Move) -> Result<()> {
+    fn is_draw(&self, next_board: &mut Board, mov: Move) -> bool {
+        next_board.apply_move_unchecked(mov);
+        let count = self.full_position_counts.get(&next_board.clone().to_position_board())
+            .copied()
+            .unwrap_or(0);
+        let is_draw = next_board.is_draw_fast() || count > 2;
+        next_board.reset_with(&self.board);
+        is_draw
+    }
+
+    pub fn apply_move(&mut self, user_move: UserMove) -> Result<()> {
         let mov = self.legal_moves()
             .iter()
             .find(|mov| mov.to_move() == user_move)
@@ -83,34 +95,31 @@ impl Game {
         }
     }
 
-    fn apply_move_unchecked(&mut self, mov: SearchMove) {
-        self.board.apply_search_move_unchecked(mov);
+    fn apply_move_unchecked(&mut self, mov: Move) {
+        self.board.apply_move_unchecked(mov);
         let count = self.full_position_counts
-            .entry(self.board.clone())
+            .entry(self.board.clone().to_position_board())
             .or_insert(0);
         *count += 1;
     }
 
-    pub fn best_move(&self) -> Result<Move> {
+    pub fn best_move(&self) -> Result<UserMove> {
         let mut next_board = self.board.clone();
         // TODO: Include repetitions if it might be favorable for us.
-        let moves: Vec<_> = self.legal_moves()
-            .iter()
-            .copied()
-            .filter(|mov| {
-                next_board.apply_search_move_unchecked(*mov);
-                let count = self.full_position_counts.get(&next_board)
-                    .copied()
-                    .unwrap_or(0);
-                next_board.reset_with(&self.board);
-                count < 2
-            })
-            .collect();
+        let moves = {
+            let legal_moves = self.legal_moves();
+            let moves: Vec<_> = legal_moves
+                .iter()
+                .copied()
+                .filter(|mov| !self.is_draw(&mut next_board, *mov))
+                .collect();
+            if moves.is_empty() { legal_moves } else { moves }
+        };
 
         let mut max_score = None;
         let mut best_move = None;
         for mov in moves {
-            next_board.apply_search_move_unchecked(mov);
+            next_board.apply_move_unchecked(mov);
             let score = -search::search(
                 &mut next_board,
                 config::DEFAULT_DEPTH - 1,
@@ -237,7 +246,7 @@ mod test {
             "e5d6",
         ];
         for raw_mov in raw_moves {
-            let mov = Move::from_long_algebraic_notation(raw_mov).unwrap();
+            let mov = UserMove::from_long_algebraic_notation(raw_mov).unwrap();
             game.apply_move(mov).unwrap();
         }
         game.board.debug_check();
@@ -250,7 +259,7 @@ mod test {
         const HARD_MATE_FEN: &str = "8/1N2N3/2r5/3qp2R/QP2kp1K/5R2/6B1/6B1 w - - 0 0";
         let game = Game::from_fen(HARD_MATE_FEN).unwrap();
         let mov = game.best_move().unwrap();
-        assert_eq!(mov, Move::from_long_algebraic_notation("a4a8").unwrap())
+        assert_eq!(mov, UserMove::from_long_algebraic_notation("a4a8").unwrap())
     }
 
     #[test]
@@ -259,18 +268,25 @@ mod test {
 
         const PROMOTE_FEN: &str = "r3kb1r/ppPqpppp/n3b2n/8/8/5N2/PPPP1PPP/RNBQKB1R w KQkq - 11 10";
         let game = Game::from_fen(PROMOTE_FEN).unwrap();
-        assert!(game.legal_moves().contains(&SearchMove::promotion(
-            Move::chess_position_to_index(b"c7").unwrap(),
-            Move::chess_position_to_index(b"c8").unwrap(),
+        assert!(game.legal_moves().contains(&Move::promotion(
+            UserMove::chess_position_to_index(b"c7").unwrap(),
+            UserMove::chess_position_to_index(b"c8").unwrap(),
             Piece::Rook,
         )));
 
         const CAPTURE_PROMOTE_FEN: &str = "rnbqkb1r/ppP1pppp/7n/8/8/8/PPPP1PPP/RNBQKBNR w KQkq - 1 5";
         let game = Game::from_fen(CAPTURE_PROMOTE_FEN).unwrap();
-        assert!(game.legal_moves().contains(&SearchMove::promotion_capture(
-            Move::chess_position_to_index(b"c7").unwrap(),
-            Move::chess_position_to_index(b"d8").unwrap(),
+        assert!(game.legal_moves().contains(&Move::promotion_capture(
+            UserMove::chess_position_to_index(b"c7").unwrap(),
+            UserMove::chess_position_to_index(b"d8").unwrap(),
             Piece::Queen,
         )));
+    }
+
+    #[test]
+    fn test_50_move_rule() {
+        const DRAW_FEN: &str = "N7/K7/8/8/8/8/7k/7n w - - 50 50";
+        let draw = Game::from_fen(DRAW_FEN).unwrap();
+        assert_eq!(draw.legal_moves(), &[]);
     }
 }

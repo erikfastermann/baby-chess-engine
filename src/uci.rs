@@ -1,6 +1,6 @@
 use std::io::{self, BufRead};
 
-use crate::{game::Game, mov::Move, result::Result};
+use crate::{game::Game, mov::UserMove, result::Result};
 
 pub struct UCI {
     game: Game,
@@ -54,7 +54,7 @@ impl UCI {
     fn apply_moves(&mut self, raw_moves: &[&str]) -> Result<()> {
         self.game.reset();
         for raw_move in raw_moves {
-            let mov = Move::from_long_algebraic_notation(raw_move)?;
+            let mov = UserMove::from_long_algebraic_notation(raw_move)?;
             self.game.apply_move(mov)?;
         }
         Ok(())
