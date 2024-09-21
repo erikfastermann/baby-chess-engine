@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::position;
+use crate::{bitset::{Bitset, ROW_0, ROW_7}, position};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Color {
@@ -33,6 +33,13 @@ impl Color {
         match self {
             Color::White => 7,
             Color::Black => 0,
+        }
+    }
+
+    pub fn first_row_bitset(&self) -> Bitset {
+        match self {
+            Color::White => ROW_7,
+            Color::Black => ROW_0,
         }
     }
 

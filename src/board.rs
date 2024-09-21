@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, config, mov::{Move, MoveKind}, moves::{Moves, MovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{self, index_to_position, position_to_index}, result::Result};
+use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, mov::{Move, MoveKind}, moves::{Moves, MovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{self, index_to_position, position_to_index}, result::Result};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PositionBoard {
@@ -12,8 +12,8 @@ pub struct PositionBoard {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Board {
-    black: PlayerBoard,
-    white: PlayerBoard,
+    pub black: PlayerBoard,
+    pub white: PlayerBoard,
     pub color: Color,
     pub en_passant_index: Option<u8>,
     pub moves_since_capture_or_pawn: u8,
@@ -277,38 +277,6 @@ impl Board {
 
     pub fn is_draw_fast(&self) -> bool {
         self.moves_since_capture_or_pawn >= MAX_MOVES_SINCE_CAPTURE_OR_PAWN
-    }
-
-    fn is_end_game(&self) -> bool {
-        if self.white.queens().is_empty() && self.black.queens().is_empty() {
-            return true;
-        }
-
-        let white_minor_pieces = self.white.knights().count() + self.white.bishops().count();
-        let white_major_pieces = self.white.rooks().count() + self.white.queens().count();
-
-        let black_minor_pieces = self.black.knights().count() + self.black.bishops().count();
-        let black_major_pieces = self.black.rooks().count() + self.black.queens().count();
-
-        let no_major_pieces = white_major_pieces == 0 && black_major_pieces == 0;
-        let max_one_minor_piece = white_minor_pieces <= 1 && black_minor_pieces <= 1;
-        if no_major_pieces && max_one_minor_piece {
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn score(&self) -> i32 {
-        let is_end_game = self.is_end_game();
-        let white = self.white.score(&WHITE_PIECE_SQUARE_TABLES, is_end_game);
-        let black = self.black.score(black_piece_square_tables(), is_end_game);
-        let score = white - black;
-        let perspective = match self.color {
-            Color::White => 1,
-            Color::Black => -1,
-        };
-        score * perspective
     }
 
     pub fn reset_with(&mut self, old: &Self) {
@@ -729,44 +697,8 @@ impl PlayerBoard {
         bitset
     }
 
-    fn score(&self, tables: &PieceSquareTables, is_end_game: bool) -> i32 {
-        fn position(piece: Bitset, table: &[i32; 64]) -> i32 {
-            piece.indices().map(|index| table[index as usize]).sum::<i32>()
-        }
-
-        let position = if is_end_game {
-            position(self.pawns(), &tables.pawns.end_game)
-                + position(self.knights(), &tables.knights.end_game)
-                + position(self.bishops(), &tables.bishops.end_game)
-                + position(self.rooks(), &tables.rooks.end_game)
-                + position(self.queens(), &tables.queens.end_game)
-                + position(self.king(), &tables.king.end_game)
-        } else {
-            position(self.pawns(), &tables.pawns.mid_game)
-                + position(self.knights(), &tables.knights.mid_game)
-                + position(self.bishops(), &tables.bishops.mid_game)
-                + position(self.rooks(), &tables.rooks.mid_game)
-                + position(self.queens(), &tables.queens.mid_game)
-                + position(self.king(), &tables.king.mid_game)
-        };
-
-        let material = self.pawns().count() * config::SCORE_PAWN
-            + self.knights().count() * config::SCORE_KNIGHT
-            + self.bishops().count() * config::SCORE_BISHOP
-            + self.rooks().count() * config::SCORE_ROOK
-            + self.queens().count() * config::SCORE_QUEEN
-            + self.king().count() * config::SCORE_KING;
-
-        position + material
-    }
-
     pub fn has_check(&self, enemy: &Self, self_color: Color) -> bool {
-        let pawns_without_en_passant = match self_color {
-            Color::White => Moves::white_pawns_without_en_passant(self, enemy),
-            Color::Black => Moves::black_pawns_without_en_passant(self, enemy),
-        };
-        Moves::without_pawns_castle(self, enemy)
-            .combine(&pawns_without_en_passant)
+        Moves::without_en_passant_castle(self, enemy, self_color)
             .captures
             .overlaps(enemy.king())
     }
@@ -893,102 +825,6 @@ impl fmt::Display for InvalidFenError {
 }
 
 impl std::error::Error for InvalidFenError {}
-
-struct PieceSquareTable {
-    mid_game: [i32; 64],
-    end_game: [i32; 64],
-}
-
-struct PieceSquareTables {
-    pawns: PieceSquareTable,
-    knights: PieceSquareTable,
-    bishops: PieceSquareTable,
-    rooks: PieceSquareTable,
-    queens: PieceSquareTable,
-    king: PieceSquareTable,
-}
-
-static WHITE_PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables {
-    pawns: PieceSquareTable {
-        mid_game: config::SCORE_PAWNS_TABLE,
-        end_game: config::SCORE_PAWNS_TABLE,
-    },
-    knights: PieceSquareTable {
-        mid_game: config::SCORE_KNIGHTS_TABLE,
-        end_game: config::SCORE_KNIGHTS_TABLE,
-    },
-    bishops: PieceSquareTable {
-        mid_game: config::SCORE_BISHOPS_TABLE,
-        end_game: config::SCORE_BISHOPS_TABLE,
-    },
-    rooks: PieceSquareTable {
-        mid_game: config::SCORE_ROOKS_TABLE,
-        end_game: config::SCORE_ROOKS_TABLE,
-    },
-    queens: PieceSquareTable {
-        mid_game: config::SCORE_QUEENS_TABLE,
-        end_game: config::SCORE_QUEENS_TABLE,
-    },
-    king: PieceSquareTable {
-        mid_game: config::SCORE_KING_TABLE_MIDDLE_GAME,
-        end_game: config::SCORE_KING_TABLE_END_GAME,
-    },
-};
-
-static mut BLACK_PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables {
-    pawns: PieceSquareTable {
-        mid_game: config::SCORE_PAWNS_TABLE,
-        end_game: config::SCORE_PAWNS_TABLE,
-    },
-    knights: PieceSquareTable {
-        mid_game: config::SCORE_KNIGHTS_TABLE,
-        end_game: config::SCORE_KNIGHTS_TABLE,
-    },
-    bishops: PieceSquareTable {
-        mid_game: config::SCORE_BISHOPS_TABLE,
-        end_game: config::SCORE_BISHOPS_TABLE,
-    },
-    rooks: PieceSquareTable {
-        mid_game: config::SCORE_ROOKS_TABLE,
-        end_game: config::SCORE_ROOKS_TABLE,
-    },
-    queens: PieceSquareTable {
-        mid_game: config::SCORE_QUEENS_TABLE,
-        end_game: config::SCORE_QUEENS_TABLE,
-    },
-    king: PieceSquareTable {
-        mid_game: config::SCORE_KING_TABLE_MIDDLE_GAME,
-        end_game: config::SCORE_KING_TABLE_END_GAME,
-    },
-};
-
-fn black_piece_square_tables() -> &'static PieceSquareTables {
-    unsafe { &BLACK_PIECE_SQUARE_TABLES }
-}
-
-pub unsafe fn init_black_piece_square_tables() {
-    reverse_piece_square_tables(&mut BLACK_PIECE_SQUARE_TABLES)
-}
-
-fn reverse_piece_square_tables(tables: &mut PieceSquareTables) {
-    tables.pawns.mid_game.reverse();
-    tables.pawns.end_game.reverse();
-
-    tables.knights.mid_game.reverse();
-    tables.knights.end_game.reverse();
-
-    tables.bishops.mid_game.reverse();
-    tables.bishops.end_game.reverse();
-
-    tables.rooks.mid_game.reverse();
-    tables.rooks.end_game.reverse();
-
-    tables.queens.mid_game.reverse();
-    tables.queens.end_game.reverse();
-
-    tables.king.mid_game.reverse();
-    tables.king.end_game.reverse();
-}
 
 #[cfg(test)]
 mod tests {

@@ -1,4 +1,4 @@
-use crate::{board::{Board, SCORE_MAX, SCORE_MIN}, mov::Move, moves::MovesBuilder};
+use crate::{board::{Board, SCORE_MAX, SCORE_MIN}, eval, mov::Move, moves::MovesBuilder};
 
 pub struct Searcher {
     max_depth: usize,
@@ -26,7 +26,7 @@ impl Searcher {
             return Some((Move::UNINITIALIZED, 0));
         }
         if depth == self.max_depth {
-            return Some((Move::UNINITIALIZED, board.score()));
+            return Some((Move::UNINITIALIZED, eval::score(board)));
         }
 
         let mut moves_buffer = MovesBuilder::new();

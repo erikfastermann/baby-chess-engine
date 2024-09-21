@@ -1,6 +1,6 @@
 use std::{iter::zip, cmp::Ordering};
 
-use crate::{bitset::{self, Bitset, COLUMN_0, COLUMN_7, ROW_0, ROW_1, ROW_6, ROW_7}, board::{Board, PlayerBoard}, mov::Move, piece::Piece, position::{index_to_position, position_to_index}};
+use crate::{bitset::{self, Bitset, COLUMN_0, COLUMN_7, ROW_0, ROW_1, ROW_6, ROW_7}, board::{Board, PlayerBoard}, color::Color, mov::Move, piece::Piece, position::{index_to_position, position_to_index}};
 
 static mut DIAGONALS_LEFT: [Bitset; 64] = [bitset::ZERO; 64];
 static mut DIAGONALS_RIGHT: [Bitset; 64] = [bitset::ZERO; 64];
@@ -15,7 +15,7 @@ fn diagonal_right(index: u8) -> Bitset {
     unsafe { DIAGONALS_RIGHT[usize::from(index)] }
 }
 
-fn king_move(index: u8) -> Bitset {
+pub fn king_area(index: u8) -> Bitset {
     unsafe { KING_MOVES[usize::from(index)] }
 }
 
@@ -332,7 +332,7 @@ impl Moves {
     }
 
     pub fn king(all_pieces: Bitset, index: u8, enemy_pieces: Bitset) -> Self {
-        let possible_moves = king_move(index);
+        let possible_moves = king_area(index);
         Self {
             moves: possible_moves & !all_pieces,
             captures: possible_moves & enemy_pieces,
@@ -374,6 +374,15 @@ impl Moves {
             .fold(Moves::empty(), |a, b| a.combine(&b))
     }
 
+    pub fn without_en_passant_castle(we: &PlayerBoard, enemy: &PlayerBoard, we_color: Color) -> Self {
+        let pawns_without_en_passant = match we_color {
+            Color::White => Moves::white_pawns_without_en_passant(we, enemy),
+            Color::Black => Moves::black_pawns_without_en_passant(we, enemy),
+        };
+        Self::without_pawns_castle(we, enemy)
+            .combine(&pawns_without_en_passant)
+    }
+
     pub fn combine(&self, other: &Self) -> Self {
         Self {
             moves: self.moves | other.moves,
@@ -386,6 +395,10 @@ impl Moves {
             moves: self.moves & bitset,
             captures: self.captures & bitset,
         }
+    }
+
+    pub fn moves_captures(&self) -> Bitset {
+        self.moves | self.captures
     }
 }
 

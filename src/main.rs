@@ -4,6 +4,7 @@ mod bitset;
 mod board;
 mod color;
 mod config;
+mod eval;
 mod fmt;
 mod game;
 mod init;
