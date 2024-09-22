@@ -1,5 +1,8 @@
 use crate::{bitset::Bitset, board::{Board, PlayerBoard}, color::Color, config, moves::{self, Moves}};
 
+pub const SCORE_MIN: i32 = i32::MAX * -1;
+pub const SCORE_MAX: i32 = i32::MAX;
+
 pub fn score(board: &Board) -> i32 {
     let is_end_game = is_end_game(board);
     let white = score_player(&board.white, &WHITE_PIECE_SQUARE_TABLES, is_end_game)

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::Color, mov::{Move, MoveKind}, moves::{Moves, MovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{self, index_to_position, position_to_index}, result::Result};
+use crate::{bitset::{Bitset, ROW_0, ROW_7}, color::{Castle, Color}, config, mov::{Move, MoveKind}, moves::{Moves, MovesBuilder}, piece::{Piece, PROMOTION_PIECES, STARTING_EMPTY_SQUARES, STARTING_PAWNS, STARTING_PIECES_FIRST_RANK}, position::{self, index_to_position, position_to_index}, result::Result};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PositionBoard {
@@ -57,17 +57,11 @@ impl Board {
         let mut board = Self {
             white: PlayerBoard {
                 bitsets: [Bitset::zero(); 7],
-                can_castle: CanCastle {
-                    left: true,
-                    right: true,
-                },
+                can_castle: CanCastle::new(true, true),
             },
             black: PlayerBoard {
                 bitsets: [Bitset::zero(); 7],
-                can_castle: CanCastle {
-                    left: true,
-                    right: true,
-                },
+                can_castle: CanCastle::new(true, true),
             },
             color: Color::White,
             en_passant_index: None,
@@ -168,17 +162,17 @@ impl Board {
         let mut board = Self {
             black: PlayerBoard {
                 bitsets: [Bitset::zero(); 7],
-                can_castle: CanCastle {
-                    left: castle_raw.contains('q'),
-                    right: castle_raw.contains('k'),
-                },
+                can_castle: CanCastle::new(
+                    castle_raw.contains('q'),
+                    castle_raw.contains('k'),
+                ),
             },
             white: PlayerBoard {
                 bitsets: [Bitset::zero(); 7],
-                can_castle: CanCastle {
-                    left: castle_raw.contains('Q'),
-                    right: castle_raw.contains('K'),
-                },
+                can_castle: CanCastle::new(
+                    castle_raw.contains('Q'),
+                    castle_raw.contains('K'),
+                ),
             },
             color,
             en_passant_index,
@@ -242,13 +236,18 @@ impl Board {
     }
 
     fn check(&self) -> Result<()> {
+        // TODO: Check castle settings.
         self.check_fast()?;
         if let Some(en_passant_index) = self.en_passant_index {
             if !self.player_board(self.color.other()).pawns().has(en_passant_index) {
                 return Err("en passant position does not match with a pawn".into());
             }
-            if self.color.other().en_passant_row() != index_to_position(en_passant_index).1 {
+            let (x, y) = index_to_position(en_passant_index);
+            if self.color.other().en_passant_row() != y {
                 return Err("en passant on invalid rank".into());
+            }
+            if self.bitset().has(position_to_index(x, self.color.nth_row(2))) {
+                return Err("en passant has non empty field before pawn".into());
             }
         }
         let has_check = self.player_board(self.color).has_check(
@@ -346,12 +345,7 @@ impl Board {
                 }
             },
             MoveKind::Castle => {
-                let we_can_castle = if mov == Move::castle_left(self.color) {
-                    self.castle_left_apply()
-                } else {
-                    debug_assert_eq!(mov, Move::castle_right(self.color));
-                    self.castle_right_apply()
-                };
+                let we_can_castle = self.castle_apply(mov.as_castle().unwrap());
                 UndoMove::Castle {
                     from: mov.from(),
                     to: mov.to(),
@@ -400,55 +394,45 @@ impl Board {
 
     fn move_disable_castle(&mut self, piece: Piece, from: u8) -> CanCastle {
         let old_can_castle = self.we().can_castle;
-        if piece == Piece::King {
-            self.we_mut().disable_castle();
-        } else if piece == Piece::Rook {
-            if from == self.color.rook_left_starting_index() {
-                self.we_mut().disable_castle_left();
-            } else if from == self.color.rook_right_starting_index() {
-                self.we_mut().disable_castle_right();
-            }
-        }
+        self.we_mut().can_castle = self.move_castle_settings(piece, from);
         old_can_castle
+    }
+
+    fn move_castle_settings(&self, piece: Piece, from: u8) -> CanCastle {
+        if piece == Piece::King {
+            CanCastle::new(false, false)
+        } else if piece == Piece::Rook {
+            if from == self.color.castle_left().rook_from {
+                CanCastle::new(false, self.we().can_castle_right())
+            } else if from == self.color.castle_right().rook_from {
+                CanCastle::new(self.we().can_castle_left(), false)
+            } else {
+                self.we().can_castle
+            }
+        } else {
+            self.we().can_castle
+        }
     }
 
     fn capture_disable_castle(&mut self, to: u8) -> CanCastle {
         let old_can_castle = self.enemy().can_castle;
-        if to == self.color.other().rook_left_starting_index() {
-            self.enemy_mut().disable_castle_left();
-        } else if to == self.color.other().rook_right_starting_index() {
-            self.enemy_mut().disable_castle_right();
+        self.enemy_mut().can_castle = self.capture_castle_settings(to);
+        old_can_castle
+    }
+
+    fn capture_castle_settings(&self, to: u8) -> CanCastle {
+        if to == self.color.other().castle_left().rook_from {
+            CanCastle::new(false, self.enemy().can_castle_right())
+        } else if to == self.color.other().castle_right().rook_from {
+            CanCastle::new(self.enemy().can_castle_left(), false)
+        } else {
+            self.enemy().can_castle
         }
-        old_can_castle
     }
 
-    fn castle_left_apply(&mut self) -> CanCastle {
-        let king_from = self.color.king_starting_index();
-        let king_to = self.color.king_starting_index() - 2;
-        let rook_left_starting_index = self.color.rook_left_starting_index();
-        let first_row = self.color.first_row();
-
-        self.we_mut().piece_mut(Piece::King).mov(king_from, king_to);
-        self.we_mut().piece_mut(Piece::Rook).mov(
-            rook_left_starting_index,
-            position_to_index(3, first_row),
-        );
-        let old_can_castle = self.we().can_castle;
-        self.we_mut().disable_castle();
-        old_can_castle
-    }
-
-    fn castle_right_apply(&mut self) -> CanCastle {
-        let king_from = self.color.king_starting_index();
-        let king_to = self.color.king_starting_index() + 2;
-        let rook_right_starting_index = self.color.rook_right_starting_index();
-        let first_row = self.color.first_row();
-
-        self.we_mut().piece_mut(Piece::King).mov(king_from, king_to);
-        self.we_mut().piece_mut(Piece::Rook).mov(
-            rook_right_starting_index,
-            position_to_index(5, first_row),
-        );
+    fn castle_apply(&mut self, castle: Castle) -> CanCastle {
+        self.we_mut().piece_mut(Piece::King).mov(castle.king_from, castle.king_to);
+        self.we_mut().piece_mut(Piece::Rook).mov(castle.rook_from, castle.rook_to);
         let old_can_castle = self.we().can_castle;
         self.we_mut().disable_castle();
         old_can_castle
@@ -484,10 +468,10 @@ impl Board {
         }
 
         if self.can_castle_left() {
-            builder.push_special_move(Move::castle_left(self.color));
+            builder.push_special_move(Move::castle(self.color.castle_left()));
         }
         if self.can_castle_right() {
-            builder.push_special_move(Move::castle_right(self.color));
+            builder.push_special_move(Move::castle(self.color.castle_right()));
         }
 
         if let Some(en_passant_index) = self.en_passant_index {
@@ -497,22 +481,19 @@ impl Board {
 
     fn can_castle_right(&mut self) -> bool {
         let all_pieces = self.bitset();
-        let king_index = self.we().king().first_index();
+        let castle = self.color.castle_right();
     
-        let king_starting_index = self.color.king_starting_index();
-        let row = self.color.first_row();
-    
-        let allowed = king_index == king_starting_index
-            && self.we().can_castle_right()
-            && self.we().rooks().has(self.color.rook_right_starting_index())
-            && !all_pieces.has(position_to_index(5, row))
-            && !all_pieces.has(position_to_index(6, row));
+        let allowed = self.we().can_castle_right()
+            && !all_pieces.has(castle.king_from + 1)
+            && !all_pieces.has(castle.king_from + 2);
         if !allowed {
             return false;
         }
-    
-        for shift in 0..=2 {
-            let (from, to) = (king_starting_index, king_starting_index+shift);
+        debug_assert!(self.we().king().has(castle.king_from));
+        debug_assert!(self.we().rooks().has(castle.rook_from));
+
+        for king_to in castle.king_from..=castle.king_to {
+            let (from, to) = (castle.king_from, king_to);
             self.we_mut().piece_mut(Piece::King).mov(from, to);
             let check = self.enemy()
                 .has_check(self.we(), self.color.other());
@@ -526,25 +507,23 @@ impl Board {
 
     fn can_castle_left(&mut self) -> bool {
         let all_pieces = self.bitset();
-        let king_index = self.we().king().first_index();
+        let castle = self.color.castle_left();
     
-        let king_starting_index = self.color.king_starting_index();
-        let row = self.color.first_row();
-    
-        let allowed = king_index == king_starting_index
-            && self.we().can_castle_left()
-            && self.we().rooks().has(self.color.rook_left_starting_index())
-            && !all_pieces.has(position_to_index(3, row))
-            && !all_pieces.has(position_to_index(2, row))
-            && !all_pieces.has(position_to_index(1, row));
+        let allowed = self.we().can_castle_left()
+            && !all_pieces.has(castle.king_from - 1)
+            && !all_pieces.has(castle.king_from - 2)
+            && !all_pieces.has(castle.king_from - 3);
         if !allowed {
             return false;
         }
+        debug_assert!(self.we().king().has(castle.king_from));
+        debug_assert!(self.we().rooks().has(castle.rook_from));
     
-        for shift in 0..=2 {
-            let (from, to) = (king_starting_index, king_starting_index-shift);
+        for king_to in (castle.king_to..=castle.king_from).rev() {
+            let (from, to) = (castle.king_from, king_to);
             self.we_mut().piece_mut(Piece::King).mov(from, to);
-            let check = self.enemy().has_check(self.we(), self.color.other());
+            let check = self.enemy()
+                .has_check(self.we(), self.color.other());
             self.we_mut().piece_mut(Piece::King).mov(to, from);
             if check {
                 return false;
@@ -554,13 +533,88 @@ impl Board {
     }
 
     fn fill_en_passant(&self, en_passant_index: u8, builder: &mut MovesBuilder) {
-        // TODO: Check nothing can be captured with the en passant move.
         if self.we().has_en_passant_left(self.enemy(), en_passant_index) {
             builder.push_special_move(Move::en_passant_left(self.color, en_passant_index).unwrap());
         }
 
         if self.we().has_en_passant_right(self.enemy(), en_passant_index) {
             builder.push_special_move(Move::en_passant_right(self.color, en_passant_index).unwrap());
+        }
+    }
+
+    pub fn zobrist_hash(&self) -> u64 {
+        let side = if self.color == Color::Black { config::HASH_BLACK_TO_MOVE } else { 0 };
+        self.white.zobrist_hash(Color::White)
+            ^ self.black.zobrist_hash(Color::Black)
+            ^ side
+            ^ Self::zobrist_en_passant_hash(self.en_passant_index)
+    }
+
+    fn zobrist_en_passant_hash(en_passant_index: Option<u8>) -> u64 {
+       if let Some(en_passant_index) = en_passant_index {
+            let (_, en_passant_file) = index_to_position(en_passant_index);
+            config::HASHES_EN_PASSANT_FILES[usize::from(en_passant_file) & 0b111]
+        } else {
+            0
+        }
+    }
+
+    pub fn incremental_zobrist_hash_unchecked(&self, mov: Move) -> u64 {
+        self.incremental_zobrist_hash_unchecked_inner(mov)
+            ^ config::HASH_BLACK_TO_MOVE
+            ^ Self::zobrist_en_passant_hash(self.en_passant_index)
+    }
+
+    fn incremental_zobrist_hash_unchecked_inner(&self, mov: Move) -> u64 {
+        match mov.kind() {
+            MoveKind::NonCapture => {
+                zobrist_hash_piece(self.color, mov.piece(), mov.from())
+                    ^ zobrist_hash_piece(self.color, mov.piece(), mov.to())
+                    ^ self.we().can_castle.zobrist_hash()
+                    ^ self.move_castle_settings(mov.piece(), mov.from()).zobrist_hash()
+            },
+            MoveKind::Capture => {
+                let captured_piece = self.enemy().which_piece(mov.to());
+                zobrist_hash_piece(self.color.other(), captured_piece, mov.to())
+                    ^ zobrist_hash_piece(self.color, mov.piece(), mov.from())
+                    ^ zobrist_hash_piece(self.color, mov.piece(), mov.to())
+                    ^ self.we().can_castle.zobrist_hash()
+                    ^ self.move_castle_settings(mov.piece(), mov.from()).zobrist_hash()
+                    ^ self.enemy().can_castle.zobrist_hash()
+                    ^ self.capture_castle_settings(mov.to()).zobrist_hash()
+            },
+            MoveKind::EnPassant => {
+                let en_passant_index = self.en_passant_index.unwrap();
+                zobrist_hash_piece(self.color.other(), Piece::Pawn, en_passant_index)
+                    ^ zobrist_hash_piece(self.color, Piece::Pawn, mov.from())
+                    ^ zobrist_hash_piece(self.color, Piece::Pawn, mov.to())
+            },
+            MoveKind::Castle => {
+                let castle = mov.as_castle().unwrap();
+                zobrist_hash_piece(self.color, Piece::King, castle.king_from)
+                    ^ zobrist_hash_piece(self.color, Piece::King, castle.king_to)
+                    ^ zobrist_hash_piece(self.color, Piece::Rook, castle.rook_from)
+                    ^ zobrist_hash_piece(self.color, Piece::Rook, castle.rook_to)
+                    ^ self.we().can_castle.zobrist_hash()
+                    ^ CanCastle::new(false, false).zobrist_hash()
+            },
+            MoveKind::Promotion => {
+                zobrist_hash_piece(self.color, Piece::Pawn, mov.from())
+                    ^ zobrist_hash_piece(self.color, mov.promotion_piece(), mov.to())
+            },
+            MoveKind::PromotionCapture => {
+                let captured_piece = self.enemy().which_piece(mov.to());
+                zobrist_hash_piece(self.color.other(), captured_piece, mov.to())
+                    ^ zobrist_hash_piece(self.color, Piece::Pawn, mov.from())
+                    ^ zobrist_hash_piece(self.color, mov.promotion_piece(), mov.to())
+                    ^ self.enemy().can_castle.zobrist_hash()
+                    ^ self.capture_castle_settings(mov.to()).zobrist_hash()
+            },
+            MoveKind::PawnDouble => {
+                zobrist_hash_piece(self.color, Piece::Pawn, mov.from())
+                    ^ zobrist_hash_piece(self.color, Piece::Pawn, mov.to())
+                    ^ Self::zobrist_en_passant_hash(Some(mov.to()))
+            },
         }
     }
 }
@@ -598,20 +652,31 @@ pub enum UndoMove {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CanCastle(u8);
+
+impl CanCastle {
+    fn new(left: bool, right: bool) -> Self {
+        CanCastle((u8::from(left) << 1) | u8::from(right))
+    }
+
+    fn left(self) -> bool {
+        (self.0 >> 1) != 0
+    }
+
+    fn right(self) -> bool {
+        (self.0 & 0b1) != 0
+    }
+
+    fn zobrist_hash(self) -> u64 {
+        config::HASHES_CASTLE_RIGHTS[usize::from(self.0) & 0b11]
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlayerBoard {
     bitsets: [Bitset; 7],
     pub can_castle: CanCastle,
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CanCastle {
-    // TODO: bitflags
-    left: bool,
-    right: bool,
-}
-
-pub const SCORE_MIN: i32 = i32::MAX * -1;
-pub const SCORE_MAX: i32 = i32::MAX;
 
 impl PlayerBoard {
     pub fn pawns(&self) -> Bitset {
@@ -727,24 +792,15 @@ impl PlayerBoard {
     }
 
     pub fn can_castle_left(&self) -> bool {
-        self.can_castle.left
+        self.can_castle.left()
     }
 
     pub fn can_castle_right(&self) -> bool {
-        self.can_castle.right
+        self.can_castle.right()
     }
 
     pub fn disable_castle(&mut self) {
-        self.can_castle.left = false;
-        self.can_castle.right = false;
-    }
-
-    pub fn disable_castle_left(&mut self) {
-        self.can_castle.left = false;
-    }
-
-    pub fn disable_castle_right(&mut self) {
-        self.can_castle.right = false;
+        self.can_castle = CanCastle::new(false, false);
     }
 
     fn fill_bitsets(&mut self, pieces: &[Piece; 64]) {
@@ -813,6 +869,38 @@ impl PlayerBoard {
             Moves::king(all_pieces, self.king().first_index(), enemy_pieces),
         );
     }
+
+    fn zobrist_hash(&self, we_color: Color) -> u64 {
+        let mut hash = 0;
+
+        for index in self.pawns().indices() {
+            hash ^= zobrist_hash_piece(we_color, Piece::Pawn, index);
+        }
+        for index in self.knights().indices() {
+            hash ^= zobrist_hash_piece(we_color, Piece::Knight, index);
+        }
+        for index in self.bishops().indices() {
+            hash ^= zobrist_hash_piece(we_color, Piece::Bishop, index);
+        }
+        for index in self.rooks().indices() {
+            hash ^= zobrist_hash_piece(we_color, Piece::Rook, index);
+        }
+        for index in self.queens().indices() {
+            hash ^= zobrist_hash_piece(we_color, Piece::Queen, index);
+        }
+        for index in self.king().indices() {
+            hash ^= zobrist_hash_piece(we_color, Piece::King, index);
+        }
+
+        hash ^ self.can_castle.zobrist_hash()
+    }
+}
+
+fn zobrist_hash_piece(color: Color, piece: Piece, index: u8) -> u64 {
+    let index = color.to_usize()*(config::HASHES_POSITIONS.len()/2)
+        + piece.to_usize()*64
+        + (usize::from(index) % 64);
+    config::HASHES_POSITIONS[index]
 }
 
 #[derive(Debug)]

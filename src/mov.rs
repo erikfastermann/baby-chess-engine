@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{color::Color, piece::Piece, position::{self, index_to_position, position_to_index}, result::Result};
+use crate::{color::{Castle, Color}, piece::Piece, position::{self, index_to_position, position_to_index}, result::Result};
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -123,21 +123,13 @@ impl Move {
         Self::new(MoveKind::PawnDouble, Piece::Pawn, from, to, Piece::None)
     }
 
-    fn castle(from: u8, to: u8) -> Self {
-        Self::new(MoveKind::Castle, Piece::King, from, to, Piece::None)
-    }
-
-    pub fn castle_left(color: Color) -> Self {
-        Self::castle(
-            color.king_starting_index(),
-            color.king_starting_index() - 2,
-        )
-    }
-
-    pub fn castle_right(color: Color) -> Self {
-        Self::castle(
-            color.king_starting_index(),
-            color.king_starting_index() + 2,
+    pub fn castle(castle: Castle) -> Self {
+        Self::new(
+            MoveKind::Castle,
+            Piece::King,
+            castle.king_from,
+            castle.king_to,
+            Piece::None,
         )
     }
 
@@ -234,6 +226,20 @@ impl Move {
                 from: self.from(),
                 to: self.to(),
             }
+        }
+    }
+
+    pub fn as_castle(self) -> Option<Castle> {
+        if self == Move::castle(Color::White.castle_left()) {
+            Some(Color::White.castle_left())
+        } else if self == Move::castle(Color::White.castle_right()) {
+            Some(Color::White.castle_right())
+        } else if self == Move::castle(Color::Black.castle_left()) {
+            Some(Color::Black.castle_left())
+        } else if self == Move::castle(Color::Black.castle_right()) {
+            Some(Color::Black.castle_right())
+        } else {
+            None
         }
     }
 }

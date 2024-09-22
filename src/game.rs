@@ -5,26 +5,26 @@ use crate::{board::{Board, PositionBoard}, color::Color, config, mov::{Move, Use
 #[derive(Clone)]
 pub struct Game {
     board: Board,
-    full_position_counts: HashMap<PositionBoard, usize>,
+    previous_positions: Vec<PositionBoard>,
 }
 
 impl Game {
     pub fn new() -> Self {
         let mut game = Self {
             board: Board::start(),
-            full_position_counts: HashMap::new(),
+            previous_positions: Vec::new(),
         };
-        game.full_position_counts.insert(game.board.clone().to_position_board(), 1);
+        game.previous_positions.push(game.board.clone().to_position_board());
         game
     }
 
     pub fn from_fen(fen: &str) -> Result<Self> {
         let mut game = Self {
             board: Board::from_fen(fen)?,
-            full_position_counts: HashMap::new(),
+            previous_positions: Vec::new(),
         };
         // We don't know the previous positions, so we just insert the current one.
-        game.full_position_counts.insert(game.board.clone().to_position_board(), 1);
+        game.previous_positions.push(game.board.clone().to_position_board());
         Ok(game)
     }
 
@@ -50,16 +50,13 @@ impl Game {
 
     pub fn reset(&mut self) {
         self.board = Board::start();
-        self.full_position_counts.clear();
+        self.previous_positions.clear();
     }
 
     fn reset_with(&mut self, other: &Self) {
         self.board = other.board.clone();
-        self.full_position_counts.clear();
-        self.full_position_counts.extend(
-            other.full_position_counts.iter()
-                .map(|(board, count)| (board.clone(), *count)),
-        );
+        self.previous_positions.clear();
+        self.previous_positions.extend(other.previous_positions.iter().cloned());
     }
 
     fn has_check(&self, we: Color) -> bool {
@@ -68,8 +65,14 @@ impl Game {
     }
 
     fn repetition_or_50_move_rule(&self) -> bool {
-        self.board.is_draw_fast()
-            || self.full_position_counts.values().copied().any(|n| n >= 3)
+        if self.board.is_draw_fast() {
+            return true;
+        }
+        let mut counts = HashMap::new();
+        for position in &self.previous_positions {
+            *counts.entry(position.clone()).or_insert(0) += 1;
+        }
+        counts.values().copied().any(|n| n >= 3)
     }
 
     pub fn apply_move(&mut self, user_move: UserMove) -> Result<()> {
@@ -86,11 +89,12 @@ impl Game {
     }
 
     fn apply_move_unchecked(&mut self, mov: Move) {
+        // TODO
+        let hash = self.board.zobrist_hash()
+            ^ self.board.incremental_zobrist_hash_unchecked(mov);
         self.board.apply_move_unchecked(mov);
-        let count = self.full_position_counts
-            .entry(self.board.clone().to_position_board())
-            .or_insert(0);
-        *count += 1;
+        assert_eq!(self.board.zobrist_hash(), hash);
+        self.previous_positions.push(self.board.clone().to_position_board());
     }
 
     pub fn best_move(&self) -> Result<(UserMove, i32)> {
@@ -101,8 +105,10 @@ impl Game {
                 return Err(EndOfGameError::Other.into());
             }
         }
-        let (mov, score) = Searcher::new(config::DEFAULT_DEPTH)
-            .run(&mut self.board.clone());
+        let (mov, score) = Searcher::new(
+            config::DEFAULT_DEPTH,
+            &self.previous_positions,
+        ).run(&mut self.board.clone());
         Ok((mov.to_user_move(), score))
     }
 }
@@ -125,7 +131,7 @@ impl error::Error for EndOfGameError {}
 mod test {
     use std::collections::HashSet;
 
-    use crate::{board::SCORE_MAX, init::init, piece::Piece, position};
+    use crate::{eval::SCORE_MAX, init::init, piece::Piece, position};
 
     use super::*;
 

@@ -1,17 +1,31 @@
-use crate::{board::{Board, SCORE_MAX, SCORE_MIN}, eval, mov::Move, moves::MovesBuilder};
+use crate::{board::{Board, PositionBoard, MAX_MOVES_SINCE_CAPTURE_OR_PAWN}, config, eval, mov::Move, moves::MovesBuilder};
+
+const MOVES_HASHES_SIZE: usize = MAX_MOVES_SINCE_CAPTURE_OR_PAWN as usize + config::MAX_DEPTH;
 
 pub struct Searcher {
     max_depth: usize,
+    // Because of the 50 move rule, it is ok to only consider the last 50 move hashes,
+    // because repetitions are impossible afterwards.
+    last_moves_hashes: [u64; MOVES_HASHES_SIZE],
 }
 
 // TODO: Consider repetitions.
 impl Searcher {
-    pub fn new(max_depth: usize) -> Self {
-        Self { max_depth }
+    pub fn new(max_depth: usize, previous_positions: &[PositionBoard]) -> Self {
+        assert!(max_depth <= config::MAX_DEPTH);
+        Self {
+            max_depth,
+            last_moves_hashes: [0; MOVES_HASHES_SIZE], // TODO
+        }
     }
 
     pub fn run(&self, board: &mut Board) -> (Move, i32) {
-        let move_score = self.search(board, 0, SCORE_MIN, SCORE_MAX).unwrap();
+        let move_score = self.search(
+            board,
+            0,
+            eval::SCORE_MIN,
+            eval::SCORE_MAX,
+        ).unwrap();
         assert_ne!(move_score.0, Move::UNINITIALIZED);
         move_score
     }
@@ -59,7 +73,7 @@ impl Searcher {
         if !valid_move {
             let we_in_check = board.enemy().has_check(board.we(), board.color.other());
             if we_in_check {
-                Some((Move::UNINITIALIZED, SCORE_MIN + depth as i32))
+                Some((Move::UNINITIALIZED, eval::SCORE_MIN + depth as i32))
             } else {
                 Some((Move::UNINITIALIZED, 0))
             }
