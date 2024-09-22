@@ -4,22 +4,31 @@ const MOVES_HASHES_SIZE: usize = MAX_MOVES_SINCE_CAPTURE_OR_PAWN as usize + conf
 
 pub struct Searcher {
     max_depth: usize,
-    // Because of the 50 move rule, it is ok to only consider the last 50 move hashes,
+    // Because of the 50 move rule, it is ok to only consider the last 100 half-move hashes,
     // because repetitions are impossible afterwards.
     last_moves_hashes: [u64; MOVES_HASHES_SIZE],
 }
 
-// TODO: Consider repetitions.
 impl Searcher {
     pub fn new(max_depth: usize, previous_positions: &[PositionBoard]) -> Self {
         assert!(max_depth <= config::MAX_DEPTH);
+        assert!(previous_positions.len() > 0);
+        let mut last_moves_hashes = [0u64; MOVES_HASHES_SIZE];
+        let position_iter = previous_positions.iter().rev().zip(
+            last_moves_hashes[..usize::from(MAX_MOVES_SINCE_CAPTURE_OR_PAWN)].iter_mut().rev(),
+        );
+        for (position, hash) in position_iter {
+            *hash = position.zobrist_hash();
+        }
         Self {
             max_depth,
-            last_moves_hashes: [0; MOVES_HASHES_SIZE], // TODO
+            last_moves_hashes,
         }
     }
 
-    pub fn run(&self, board: &mut Board) -> (Move, i32) {
+    pub fn run(&mut self, board: &mut Board) -> (Move, i32) {
+        let hash = self.last_moves_hashes[usize::from(MAX_MOVES_SINCE_CAPTURE_OR_PAWN) - 1];
+        assert_eq!(board.clone().to_position_board().zobrist_hash(), hash);
         let move_score = self.search(
             board,
             0,
@@ -30,13 +39,44 @@ impl Searcher {
         move_score
     }
 
-    fn search(&self, board: &mut Board, depth: usize, mut alpha: i32, beta: i32) -> Option<(Move, i32)> {
+    fn hash_move(&mut self, board: &Board, mov: Move, depth: usize) {
+        let index = usize::from(MAX_MOVES_SINCE_CAPTURE_OR_PAWN) + depth;
+        let current_hash = self.last_moves_hashes[index - 1];
+        debug_assert_eq!(board.clone().to_position_board().zobrist_hash(), current_hash);
+        let incremental_hash = board.clone()
+            .to_position_board()
+            .incremental_zobrist_hash_unchecked(mov);
+        self.last_moves_hashes[index] = current_hash ^ incremental_hash;
+    }
+
+    fn is_threefold_repetition(&self, depth: usize) -> bool {
+        // If hash collisions occur this might be inaccurate,
+        // but should be really unlikely.
+        let current_index = usize::from(MAX_MOVES_SINCE_CAPTURE_OR_PAWN) + depth - 1;
+        let current_hash = self.last_moves_hashes[current_index];
+        let mut count = 0;
+        for hash in self.last_moves_hashes[..=current_index-2].iter()
+            .copied()
+            .rev()
+            .step_by(2) {
+                count += usize::from(hash == current_hash);
+        }
+        count >= 2
+    }
+
+    fn search(
+        &mut self,
+        board: &mut Board,
+        depth: usize,
+        mut alpha: i32,
+        beta: i32,
+    ) -> Option<(Move, i32)> {
         board.debug_check();
         let enemy_in_check = board.we().has_check(board.enemy(), board.color);
         if enemy_in_check {
             return None;
         }
-        if board.is_draw_fast() {
+        if board.is_draw_fast() || self.is_threefold_repetition(depth) {
             return Some((Move::UNINITIALIZED, 0));
         }
         if depth == self.max_depth {
@@ -51,6 +91,7 @@ impl Searcher {
 
         let mut best_move = Move::UNINITIALIZED;
         for mov in moves.iter().copied() {
+            self.hash_move(board, mov, depth);
             board.apply_move_unchecked(mov);
             let score = self.search(board, depth + 1, -beta, -alpha)
                 .map(|(_, score)| -score);

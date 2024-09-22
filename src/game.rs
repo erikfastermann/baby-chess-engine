@@ -49,8 +49,7 @@ impl Game {
     }
 
     pub fn reset(&mut self) {
-        self.board = Board::start();
-        self.previous_positions.clear();
+        *self = Self::new();
     }
 
     fn reset_with(&mut self, other: &Self) {
@@ -89,11 +88,10 @@ impl Game {
     }
 
     fn apply_move_unchecked(&mut self, mov: Move) {
-        // TODO
-        let hash = self.board.zobrist_hash()
-            ^ self.board.incremental_zobrist_hash_unchecked(mov);
+        let hash = self.board.clone().to_position_board().zobrist_hash()
+            ^ self.board.clone().to_position_board().incremental_zobrist_hash_unchecked(mov);
         self.board.apply_move_unchecked(mov);
-        assert_eq!(self.board.zobrist_hash(), hash);
+        assert_eq!(self.board.clone().to_position_board().zobrist_hash(), hash);
         self.previous_positions.push(self.board.clone().to_position_board());
     }
 
@@ -251,7 +249,7 @@ mod test {
 
     #[test]
     fn test_50_move_rule() {
-        const DRAW_FEN: &str = "N7/K7/8/8/8/8/7k/7n w - - 50 50";
+        const DRAW_FEN: &str = "N7/K7/8/8/8/8/7k/7n w - - 100 50";
         let draw = Game::from_fen(DRAW_FEN).unwrap();
         assert_eq!(draw.legal_moves(), &[]);
     }
