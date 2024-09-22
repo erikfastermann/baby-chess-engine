@@ -377,6 +377,7 @@ impl Board {
 
     pub fn is_draw_fast(&self) -> bool {
         self.moves_since_capture_or_pawn >= MAX_MOVES_SINCE_CAPTURE_OR_PAWN
+            || (self.white.is_draw_fast() && self.black.is_draw_fast())
     }
 
     pub fn reset_with(&mut self, old: &Self) {
@@ -766,6 +767,14 @@ impl PlayerBoard {
         Moves::without_en_passant_castle(self, enemy, self_color)
             .captures
             .overlaps(enemy.king())
+    }
+
+    fn is_draw_fast(&self) -> bool {
+        self.queens().is_empty()
+            && self.rooks().is_empty()
+            && self.pawns().is_empty()
+            && ((self.bishops().is_empty() && self.knights().count() <= 1)
+               || (self.bishops().count() <= 1 && self.knights().is_empty()))
     }
 
     pub fn has_en_passant_left(&self, enemy: &Self, en_passant_index: u8) -> bool {
