@@ -1,6 +1,6 @@
-pub const DEFAULT_DEPTH: usize = 6;
-pub const MAX_DEPTH: usize = DEFAULT_DEPTH;
-pub const MAX_DEPTH_QUIESCENCE: usize = MAX_DEPTH + 10;
+pub const DEPTH_DEFAULT: usize = 6;
+pub const DEPTH_EXTENSION: usize = DEPTH_DEFAULT + 5;
+pub const DEPTH_QUIESCENCE: usize = DEPTH_EXTENSION + 10;
 
 // See https://www.chessprogramming.org/Simplified_Evaluation_Function
 

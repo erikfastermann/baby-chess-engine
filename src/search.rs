@@ -1,6 +1,6 @@
 use crate::{board::{Board, PositionBoard, MAX_MOVES_SINCE_CAPTURE_OR_PAWN}, config, eval, mov::Move, moves::MovesBuilder};
 
-const MOVES_HASHES_SIZE: usize = MAX_MOVES_SINCE_CAPTURE_OR_PAWN as usize + config::MAX_DEPTH;
+const MOVES_HASHES_SIZE: usize = MAX_MOVES_SINCE_CAPTURE_OR_PAWN as usize + config::DEPTH_EXTENSION;
 
 pub struct Searcher {
     max_depth: usize,
@@ -10,8 +10,7 @@ pub struct Searcher {
 }
 
 impl Searcher {
-    pub fn new(max_depth: usize, previous_positions: &[PositionBoard]) -> Self {
-        assert!(max_depth <= config::MAX_DEPTH);
+    pub fn new(previous_positions: &[PositionBoard]) -> Self {
         assert!(previous_positions.len() > 0);
         let mut last_moves_hashes = [0u64; MOVES_HASHES_SIZE];
         let position_iter = previous_positions.iter().rev().zip(
@@ -21,7 +20,7 @@ impl Searcher {
             *hash = position.zobrist_hash();
         }
         Self {
-            max_depth,
+            max_depth: config::DEPTH_DEFAULT,
             last_moves_hashes,
         }
     }
@@ -64,6 +63,14 @@ impl Searcher {
         count >= 2
     }
 
+    fn search_max_depth_reached(&self, board: &mut Board, depth: usize) -> bool {
+        if depth < self.max_depth {
+            return false;
+        }
+        let in_check =  board.enemy().has_check(board.we(), board.color.other());
+        !(in_check && depth < config::DEPTH_EXTENSION)
+    }
+
     fn search(
         &mut self,
         board: &mut Board,
@@ -79,7 +86,7 @@ impl Searcher {
         if board.is_draw_fast() || self.is_threefold_repetition(depth) {
             return Some((Move::UNINITIALIZED, 0));
         }
-        if depth == self.max_depth {
+        if self.search_max_depth_reached(board, depth) {
             let score = self.quiescence_search(board, depth, alpha, beta).unwrap();
             return Some((Move::UNINITIALIZED, score));
         }
@@ -147,7 +154,7 @@ impl Searcher {
             alpha = stand_score;
         }
 
-        if depth == config::MAX_DEPTH_QUIESCENCE {
+        if depth == config::DEPTH_QUIESCENCE {
             return Some(alpha);
         }
 

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, error, fmt};
 
-use crate::{board::{Board, PositionBoard}, color::Color, config, mov::{Move, UserMove}, moves::MovesBuilder, result::Result, search::Searcher};
+use crate::{board::{Board, PositionBoard}, color::Color, mov::{Move, UserMove}, moves::MovesBuilder, result::Result, search::Searcher};
 
 #[derive(Clone)]
 pub struct Game {
@@ -103,10 +103,8 @@ impl Game {
                 return Err(EndOfGameError::Other.into());
             }
         }
-        let (mov, score) = Searcher::new(
-            config::DEFAULT_DEPTH,
-            &self.previous_positions,
-        ).run(&mut self.board.clone());
+        let (mov, score) = Searcher::new(&self.previous_positions)
+            .run(&mut self.board.clone());
         Ok((mov.to_user_move(), score))
     }
 }
