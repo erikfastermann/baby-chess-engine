@@ -33,7 +33,7 @@ impl Game {
             return Vec::new();
         }
         let mut next_game = self.clone();
-        let mut builder = MovesBuilder::new();
+        let mut builder = MovesBuilder::new(false);
         let moves = builder.fill(&mut next_game.board);
         moves.iter()
             .copied()

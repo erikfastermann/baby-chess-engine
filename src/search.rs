@@ -80,10 +80,11 @@ impl Searcher {
             return Some((Move::UNINITIALIZED, 0));
         }
         if depth == self.max_depth {
-            return Some((Move::UNINITIALIZED, eval::score(board)));
+            let score = self.quiescence_search(board, depth, alpha, beta).unwrap();
+            return Some((Move::UNINITIALIZED, score));
         }
 
-        let mut moves_buffer = MovesBuilder::new();
+        let mut moves_buffer = MovesBuilder::new(false);
         moves_buffer.fill(board);
         let moves = moves_buffer.sort(board);
         let old_board = board.clone();
@@ -121,5 +122,58 @@ impl Searcher {
         } else {
             Some((best_move, alpha))
         }
+    }
+
+    fn quiescence_search(
+        &self,
+        board: &mut Board,
+        depth: usize,
+        mut alpha: i32,
+        beta: i32,
+    ) -> Option<i32> {
+        board.debug_check();
+
+        let enemy_in_check = board.we().has_check(board.enemy(), board.color);
+        if enemy_in_check {
+            return None;
+        }
+        // No need to check for a draw, since only captures are considered.
+
+        let stand_score = eval::score(board);
+        if stand_score >= beta {
+            return Some(beta);
+        }
+        if stand_score > alpha {
+            alpha = stand_score;
+        }
+
+        if depth == config::MAX_DEPTH_QUIESCENCE {
+            return Some(alpha);
+        }
+
+        let mut moves_buffer = MovesBuilder::new(true);
+        moves_buffer.fill(board);
+        let moves = moves_buffer.sort(board);
+        let old_board = board.clone();
+
+        for mov in moves.iter().copied() {
+            board.apply_move_unchecked(mov);
+            let score = self.quiescence_search(board, depth + 1, -beta, -alpha)
+                .map(|score| -score);
+            // TODO: Undo move.
+            board.reset_with(&old_board);
+
+            let Some(score) = score else {
+                continue;
+            };
+            if score >= beta {
+                return Some(beta);
+            }
+            if score > alpha {
+                alpha = score;
+            }
+        }
+
+        Some(alpha)
     }
 }

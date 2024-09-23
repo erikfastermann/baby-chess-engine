@@ -407,20 +407,22 @@ const MAX_MOVES: usize = 218; // https://www.chessprogramming.org/Chess_Position
 pub struct MovesBuilder {
     buffer: [Move; MAX_MOVES],
     index: usize,
+    captures_only: bool,
 }
 
 impl MovesBuilder {
-    pub fn new() -> Self {
+    pub fn new(captures_only: bool) -> Self {
         Self {
             buffer: [Move::UNINITIALIZED; MAX_MOVES],
             index: 0,
+            captures_only,
         }
     }
 
     pub fn push_simple_moves(&mut self, from: u8, piece: Piece, moves: Moves) {
         for to in moves.moves.indices() {
             self.buffer[self.index] = Move::non_capture(piece, from, to);
-            self.index += 1;
+            self.index += usize::from(!self.captures_only);
         }
         for to in moves.captures.indices() {
             self.buffer[self.index] = Move::capture(piece, from, to);
@@ -430,7 +432,7 @@ impl MovesBuilder {
 
     pub fn push_special_move(&mut self, mov: Move) {
         self.buffer[self.index] = mov;
-        self.index += 1;
+        self.index += usize::from(!self.captures_only | mov.is_capture());
     }
 
     fn as_slice_mut(&mut self) -> &mut [Move] {
@@ -444,7 +446,7 @@ impl MovesBuilder {
     }
 
     pub fn sort<'a>(&'a mut self, board: &Board) -> &'a [Move] {
-        self.as_slice_mut().sort_by(|a, b| {
+        self.as_slice_mut().sort_unstable_by(|a, b| {
             compare_move_score_guess(board, *a, *b).reverse()
         });
         self.as_slice_mut()
@@ -452,13 +454,22 @@ impl MovesBuilder {
 }
 
 fn compare_move_score_guess(board: &Board, a: Move, b: Move) -> Ordering {
-    // TODO: score
+    // TODO
     if a.is_promotion() || b.is_promotion() {
         a.is_promotion().cmp(&b.is_promotion())
     } else {
-        let a_capture = board.enemy().which_piece(a.to());
-        let b_capture = board.enemy().which_piece(b.to());
-        (a_capture != Piece::None).cmp(&(b_capture != Piece::None))
+        match (a.is_capture(), b.is_capture()) {
+            (true, true) => {
+                let a_capture = board.enemy().which_piece(a.to());
+                let b_capture = board.enemy().which_piece(b.to());
+                let a_value = a_capture.value() - a.piece().value();
+                let b_value = b_capture.value() - b.piece().value();
+                a_value.cmp(&b_value)
+            },
+            (true, false) => Ordering::Greater,
+            (false, true) => Ordering::Less,
+            (false, false) => Ordering::Equal,
+        }
     }
 }
 
